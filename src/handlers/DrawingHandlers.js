@@ -431,6 +431,35 @@ export function setupDrawingHandlers(wrapHandler, app) {
   const deferBehindSelectionDecode = (user, action) =>
     !!remoteUserHandler.selectionHandler?._queueIfLoading?.(user, action);
 
+  /**
+   * A remote pattern-mode FILL must not overtake the GPT payload it renders with.
+   *
+   * `handlePatternBrushLoad` deliberately leaves `user.patternBrush` unset until
+   * the tile image has decoded, and buffers pattern STAMPS onto
+   * `user._patternPendingStrokes` in the meantime. FILL had no such gate, so a
+   * fill that landed inside the decode window read a null brush, fell through
+   * `FloodFillTool._renderMask`'s `usePatternFill` check to the flat-colour
+   * branch, and committed it — permanently, since the commit is baked.
+   *
+   * Live clients dodge this because seconds of real time separate a user
+   * choosing a pattern from clicking to fill. A JOINER replays the tail
+   * back-to-back, so a 250KB tile that takes ~30ms to decode is easily beaten by
+   * the FILL sitting a millisecond behind it — which is why this presented as
+   * "my pattern fills came back as solid colours after a resync" and cleared on
+   * a refresh (that restores rendered pixels instead of replaying the tail).
+   *
+   * Buffering rather than dropping keeps the fill in wire order relative to the
+   * sender's stamps, and `replayPending` runs it with this payload's brush and
+   * settings swapped in.
+   *
+   * @returns {boolean} true when deferred (caller should return)
+   */
+  const deferBehindPatternDecode = (user, action) => {
+    if (!user?.patternMode || !user._patternPendingStrokes) return false;
+    user._patternPendingStrokes.push({ type: 'run', run: action });
+    return true;
+  };
+
   wrapHandler('undo', (data) => {
     const user = users.get(data.sessionIndex);
     if (user) {
@@ -554,6 +583,18 @@ export function setupDrawingHandlers(wrapHandler, app) {
       return;
     }
 
+    if (deferBehindPatternDecode(user, () => applyRemoteFill(data, user))) return;
+
+    await applyRemoteFill(data, user);
+  });
+
+  /**
+   * Apply a remote flood fill. Split out of the `fill` handler so a pattern-mode
+   * fill can be replayed verbatim once the sender's tile finishes decoding.
+   * @param {Object} data - Decoded FILL message.
+   * @param {import('../User.js').User} user - The filling user.
+   */
+  async function applyRemoteFill(data, user) {
     remoteUserHandler._invalidateFillPreview?.(user);
 
     const fillTool = app.toolManager.getTool('fill');
@@ -649,5 +690,5 @@ export function setupDrawingHandlers(wrapHandler, app) {
     board.releaseSelectionMaskClipForStroke(layerIndex, userId);
     board.layerManager.commitUserStroke(layerIndex, userId, { seq: data.seq || 0 });
     board.compositeAllLayers();
-  });
+  }
 }

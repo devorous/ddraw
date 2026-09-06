@@ -1949,6 +1949,11 @@ export class RemoteUserHandler {
     // Clear tile cache so it rebuilds with new brush/settings
     const patternTool = this.toolManager.getTool('pattern');
     if (patternTool) patternTool._tileCache.clear();
+    // FloodFillTool keeps its OWN tile cache, and getPatternTile keys on
+    // brushName/colour/spacing/mode rather than on the image — so a fresh
+    // payload reusing a brush name would otherwise keep serving pattern-mode
+    // fills the previous brush's tile.
+    this.toolManager.getTool('fill')?._patternTileCache?.clear();
 
     // Strokes that arrive while the image is still decoding are buffered here and
     // replayed once it is ready — the same race the image brush already handles
@@ -1976,9 +1981,17 @@ export class RemoteUserHandler {
     user._patternLoadToken = loadToken;
 
     /**
+     * Replays everything that arrived while the tile was decoding, with this
+     * payload's brush and settings swapped in.
+     *
+     * Async because a buffered entry may be a pattern-mode FILL, which awaits
+     * its flood-fill worker and only reads the tile afterwards. Rolling the
+     * state back before it got there would hand it exactly the null/newer brush
+     * the buffer exists to prevent.
+     *
      * @param {boolean} usable - Whether the tile actually decoded.
      */
-    const replayPending = (usable) => {
+    const replayPending = async (usable) => {
       // Only retire the readiness flag if a newer load has not already claimed it.
       if (user._patternPendingStrokes === pending) delete user._patternPendingStrokes;
       const isLatest = user._patternLoadToken === loadToken;
@@ -2002,20 +2015,32 @@ export class RemoteUserHandler {
         tool?._tileCache?.clear();
       }
 
-      if (tool) {
-        for (const entry of pending) {
-          if (entry.type === 'down') {
-            user.mousedown = true;
-            tool.remoteBeginStroke(user, entry.pos);
-          } else if (entry.type === 'stamps') {
-            tool.remoteStampMask(user, entry.pts);
-          } else if (entry.type === 'up') {
-            user.mousedown = true;
-            this.handleMouseUp(user, entry.seq);
+      // Drain into a local list first. The readiness flag is already retired
+      // above, so anything arriving mid-drain runs immediately rather than
+      // joining this buffer — iterating the live array would replay it twice.
+      const entries = pending.splice(0, pending.length);
+      for (const entry of entries) {
+        if (entry.type === 'run') {
+          // A pattern-mode FILL: it owns its whole commit, needs no pattern
+          // tool, and must finish before the rollback below.
+          try {
+            await entry.run();
+          } catch (err) {
+            console.error(`[PatternBrush] Deferred fill failed for remote user ${user.id}:`, err);
           }
+          continue;
+        }
+        if (!tool) continue;
+        if (entry.type === 'down') {
+          user.mousedown = true;
+          tool.remoteBeginStroke(user, entry.pos);
+        } else if (entry.type === 'stamps') {
+          tool.remoteStampMask(user, entry.pts);
+        } else if (entry.type === 'up') {
+          user.mousedown = true;
+          this.handleMouseUp(user, entry.seq);
         }
       }
-      pending.length = 0;
 
       // A newer payload has already taken over the user's live pattern state, or
       // this one never decoded: either way it only ever existed for the replay.
