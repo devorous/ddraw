@@ -1,7 +1,17 @@
 /** @fileoverview Curated changelog data for the "What's New" popup, generated from git history. */
 
 export const CHANGELOG = [
-  {v:'Unreleased', date:'2026-08-31', current:true, items:[
+  {v:'v1.15.0-beta', date:'2026-09-05', current:true, items:[
+    ['added', 'Implemented a new tiled canvas rendering system that divides large boards into smaller tiles, improving rendering performance and memory usage on bigger boards'],
+    ['improved', 'Reduced the rendering bounding boxes for the eraser, blur, confetti, image brush, pixel brush and shape tools so remote strokes only redraw the area that changed'],
+    ['fixed', 'Fixed remote user rendering refreshing the entire board instead of just the active section'],
+    ['improved', 'Improved the rendering of mirrored drawings and several other remote user brushes'],
+    ['improved', 'Reduced the size of the temporary layer canvases used for undo to lower memory usage'],
+    ['fixed', 'Fixed an issue with the bounding boxes on selection transformations'],
+    ['fixed', 'Fixed a few issues with moderation UI overlapping and the changelog overlay not appearing properly'],
+  ], more:[
+  ], moreTotal:0},
+  {v:'v1.14.0-beta', date:'2026-08-31', items:[
     ['improved', 'Offloaded the history/timelapse generation to a new thread to prevent lagging the app out when rendering'],
     ['improved', 'Improved the performance of the pattern tool as well as blur algorithms. Added a toggle to turn off history/snapshot recording to reduce lag'],
     ['fixed', 'Fixed an issue with pattern tool rendering not masking properly with the user strokes in some circumstances'],

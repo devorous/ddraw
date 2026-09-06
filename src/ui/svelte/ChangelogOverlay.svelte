@@ -101,7 +101,7 @@
         </svg>
         <div class="changelogHeadText">
           <h2 id="changelogTitle">What's new in Top Draw</h2>
-          <div class="changelogSub">You're now on {currentVersion()} — here's what changed.</div>
+          <div class="changelogSub">You're now on {currentVersion()}; here's what changed.</div>
         </div>
         <button class="changelogClose" onclick={close} aria-label="Close changelog">×</button>
       </div>
