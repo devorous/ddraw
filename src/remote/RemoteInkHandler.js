@@ -3,6 +3,7 @@
 import { getStroke } from 'perfect-freehand';
 import { setUserLayerContent } from './userLayerPresence.js';
 import { touchRemoteScratch } from './remoteScratchReclaim.js';
+import { blurExtent } from '../utils/drawing.js';
 
 /**
  * How often an in-progress remote ink preview is redrawn, in ms.
@@ -270,7 +271,7 @@ export class RemoteInkHandler {
         if (pt[1] - r < minY) minY = pt[1] - r;
         if (pt[1] + r > maxY) maxY = pt[1] + r;
       }
-      const margin = blurAmount + size * 0.5 + 2;
+      const margin = blurExtent(blurAmount) + size * 0.5 + 2;
       const x = Math.floor(minX - margin);
       const y = Math.floor(minY - margin);
       const w = Math.ceil(maxX - minX + margin * 2);
@@ -594,7 +595,7 @@ export class RemoteInkHandler {
     const size = user._inkSize || user.size;
     const hardness = user._inkHardness !== undefined ? user._inkHardness : 1.0;
     const blurAmount = (1 - hardness) * (20 + size * 0.2);
-    const margin = size + (blurAmount * 2.5) + size * 0.5 + 15;
+    const margin = size + blurExtent(blurAmount) + size * 0.5 + 15;
     return {
       x: Math.floor(bounds.minX - margin),
       y: Math.floor(bounds.minY - margin),

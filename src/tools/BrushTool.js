@@ -3,7 +3,7 @@
  * Handles stroke lifecycle, preview rendering, and dirty rectangle tracking.
  */
 
-import { manhattanDistance, drawLineArray, bridgeGap } from '../utils/drawing.js';
+import { manhattanDistance, drawLineArray, bridgeGap, blurExtent } from '../utils/drawing.js';
 import {
   buildPreviewStrokePoints,
   drawPreviewStrokeGuide,
@@ -190,7 +190,7 @@ export class BrushTool extends Tool {
     const radius = user.pressure * user.size;
     const blurAmount = hardness < 100 ? (1 - hardnessFloat) * (20 + user.size * 0.2) : 0;
     const safetyMargin = radius * 0.5;
-    const totalRadius = radius + (blurAmount * 2.5) + safetyMargin + 15;
+    const totalRadius = radius + blurExtent(blurAmount) + safetyMargin + 15;
 
     // Use line-based tile marking for efficiency
     this.board.markDirtyPath(user, points, totalRadius);
@@ -285,7 +285,7 @@ export class BrushTool extends Tool {
     const hardnessFloat = hardness / 100.0;
     const radius = (user.pressure ?? 1) * user.size;
     const blurAmount = hardness < 100 ? (1 - hardnessFloat) * (20 + user.size * 0.2) : 0;
-    const margin = radius + (blurAmount * 2.5) + radius * 0.5 + 15;
+    const margin = radius + blurExtent(blurAmount) + radius * 0.5 + 15;
     return {
       x: Math.floor(minX - margin),
       y: Math.floor(minY - margin),

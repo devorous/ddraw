@@ -3,7 +3,7 @@
  * Manages remote cursors, drawing tool routing, and position interpolation.
  */
 
-import { drawLineArray, bridgeGap } from '../utils/drawing.js';
+import { drawLineArray, bridgeGap, blurExtent } from '../utils/drawing.js';
 import { SELECTION_MODES, getNextBrushIndex } from '../utils/parseGimp.js';
 import { resetSmoothingBuffer, applySmoothingEMA } from '../utils/smoothing.js';
 import { getPreviewTextLayout, getUserTextLineHeight } from '../utils/textLayout.js';
@@ -2583,7 +2583,7 @@ export class RemoteUserHandler {
     const radius = user.size || 0;
     const hardnessFloat = (user.hardness !== undefined ? user.hardness : 100) / 100;
     const blurAmount = hardnessFloat < 1 ? (1 - hardnessFloat) * (20 + (user.size || 0) * 0.2) : 0;
-    return radius + blurAmount + radius * 0.25 + 2;
+    return radius + blurExtent(blurAmount) + radius * 0.25 + 2;
   }
 
   /**
@@ -2662,7 +2662,7 @@ export class RemoteUserHandler {
     const radius = user.pressure * user.size;
     const hardnessFloat = (user.hardness !== undefined ? user.hardness : 100) / 100;
     const blurAmount = hardnessFloat < 1 ? (1 - hardnessFloat) * (20 + user.size * 0.2) : 0;
-    return radius + blurAmount + radius * 0.25 + 2;
+    return radius + blurExtent(blurAmount) + radius * 0.25 + 2;
   }
 
   /**

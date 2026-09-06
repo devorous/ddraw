@@ -1,6 +1,7 @@
 /** @fileoverview Handles pen and flowPen tool rendering for remote users using offscreen canvasing. */
 import { setUserLayerContent } from './userLayerPresence.js';
 import { touchRemoteScratch } from './remoteScratchReclaim.js';
+import { blurExtent } from '../utils/drawing.js';
 
 /**
  * How often an in-progress remote pen preview is redrawn, in ms.
@@ -313,7 +314,7 @@ export class RemotePenHandler {
         if (pt.y - r < minY) minY = pt.y - r;
         if (pt.y + r > maxY) maxY = pt.y + r;
       }
-      const margin = blurAmount + 2;
+      const margin = blurExtent(blurAmount) + 2;
       const x = Math.floor(minX - margin);
       const y = Math.floor(minY - margin);
       const w = Math.ceil(maxX - minX + margin * 2);
@@ -468,7 +469,7 @@ export class RemotePenHandler {
     const hardness = user._penHardness ?? 1;
     const size = user.size ?? 0;
     const blurAmount = (1 - hardness) * (20 + size * 0.2);
-    const margin = Math.ceil(Math.max(size, 1) + blurAmount * 2.5 + size * 0.5 + 10);
+    const margin = Math.ceil(Math.max(size, 1) + blurExtent(blurAmount) + size * 0.5 + 10);
 
     let clipRect = null;
     if (dirtyBounds) {
@@ -558,11 +559,11 @@ export class RemotePenHandler {
     // Stamp radius is already folded into b (unlike ink's raw point bounds).
     // Margin still needs to cover the shadow-blur trick's spread in
     // compositeWithHardness — same formula as RemoteInkHandler.getPreviewDirtyRect,
-    // whose 2.5x factor and +15 constant were tuned for that same shadowBlur call.
+    // which pads the same shadowBlur call by blurExtent() and +15.
     const size = user.size || 0;
     const hardness = user._penHardness !== undefined ? user._penHardness : 1.0;
     const blurAmount = (1 - hardness) * (20 + size * 0.2);
-    const margin = (blurAmount * 2.5) + size * 0.5 + 15;
+    const margin = blurExtent(blurAmount) + size * 0.5 + 15;
     return {
       x: Math.floor(b.minX - margin),
       y: Math.floor(b.minY - margin),

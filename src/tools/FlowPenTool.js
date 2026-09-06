@@ -5,7 +5,7 @@ import {
   prepareStrokePreviewCanvas
 } from '../ui/StrokePreviewRenderer.js';
 import { Tool } from './BaseTool.js';
-import { ensureSizedCanvas } from '../utils/drawing.js';
+import { ensureSizedCanvas, blurExtent } from '../utils/drawing.js';
 
 /**
  * @fileoverview Flow Pen tool for pressure-sensitive strokes using circle stamping.
@@ -252,7 +252,7 @@ export class FlowPenTool extends Tool {
       const brushRadius = user.size;
       const blurAmount = (1 - this.userHardness) * (20 + user.size * 0.2);
       const safetyMargin = brushRadius * 0.25;
-      const margin = blurAmount + safetyMargin + 2;
+      const margin = blurExtent(blurAmount) + safetyMargin + 2;
 
       const x = Math.floor(this.dirtyBounds.minX - margin);
       const y = Math.floor(this.dirtyBounds.minY - margin);
@@ -378,7 +378,7 @@ export class FlowPenTool extends Tool {
 
     const size = user?.size ?? 0;
     const blurAmount = (1 - this.userHardness) * (20 + size * 0.2);
-    const margin = Math.ceil(Math.max(size, 1) + blurAmount * 2.5 + size * 0.5 + 10);
+    const margin = Math.ceil(Math.max(size, 1) + blurExtent(blurAmount) + size * 0.5 + 10);
     return {
       x: Math.max(0, Math.floor(b.minX) - margin),
       y: Math.max(0, Math.floor(b.minY) - margin),

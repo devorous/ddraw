@@ -10,7 +10,7 @@ import {
   prepareStrokePreviewCanvas
 } from '../ui/StrokePreviewRenderer.js';
 import { Tool } from './BaseTool.js';
-import { clampRectToCanvas, ensureSizedCanvas } from '../utils/drawing.js';
+import { clampRectToCanvas, ensureSizedCanvas, blurExtent } from '../utils/drawing.js';
 
 /**
  * Convert perfect-freehand outline points to an SVG path string for Path2D.
@@ -256,7 +256,7 @@ export class InkTool extends Tool {
       const strokeRadius = this._strokeSize;
       const blurAmount = (1 - (this.userHardness / 100.0)) * (20 + this._strokeSize * 0.2);
       const safetyMargin = strokeRadius * 0.5;
-      const margin = strokeRadius + (blurAmount * 2.5) + safetyMargin + 15;
+      const margin = strokeRadius + blurExtent(blurAmount) + safetyMargin + 15;
 
       const x = Math.floor(this.dirtyBounds.minX - margin);
       const y = Math.floor(this.dirtyBounds.minY - margin);
@@ -595,7 +595,7 @@ export class InkTool extends Tool {
 
     const size = user?.size ?? this._strokeSize;
     const blurAmount = (1 - this.userHardness / 100) * (20 + size * 0.2);
-    const margin = size + (blurAmount * 2.5) + size * 0.5 + 15;
+    const margin = size + blurExtent(blurAmount) + size * 0.5 + 15;
     const rect = {
       x: Math.floor(bounds.minX - margin),
       y: Math.floor(bounds.minY - margin),

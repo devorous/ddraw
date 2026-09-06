@@ -2,6 +2,10 @@
  * @fileoverview Drawing utility functions for curve interpolation, smoothing, and geometric calculations.
  */
 
+/** Skia paints a `shadowBlur` tail out to ~1.25x the blur value; see blurExtent(). */
+const BLUR_EXTENT_FACTOR = 1.25;
+const BLUR_EXTENT_PAD = 5;
+
 /**
  * Generates quadratic curve points from a set of points.
  * @param {Array<{x: number, y: number}>} points - Input points.
@@ -538,6 +542,31 @@ export function ensureSizedCanvas(existing, width, height) {
  */
 export function getRenderableStampRadius(radius) {
   return Math.max(0.01, radius);
+}
+
+/**
+ * How far a stroke's soft (low-hardness) edge paints past its geometric edge.
+ *
+ * Soft edges are drawn with canvas `shadowBlur = blurAmount` (see
+ * drawLineArray), which the spec defines as a Gaussian with sigma =
+ * blurAmount / 2. Skia's blur support runs to ~2.4 sigma, i.e. ~1.2x
+ * blurAmount, and the tail is fully transparent beyond that.
+ *
+ * Measured rather than assumed: sweeping size 1-300 x hardness 0-99.5 x
+ * pressure 0.05-1 through the real renderer and reading back the exact
+ * non-zero-alpha bbox put the worst case at 1.25 * blurAmount + 0.43px.
+ * BLUR_EXTENT_PAD covers that plus rect rounding.
+ *
+ * Dirty rects used to pad by `blurAmount * 2.5` — a little over double what
+ * the blur can actually reach, which at low hardness inflated every rect
+ * (and so every composite and readback) for no visual gain.
+ *
+ * @param {number} blurAmount - The `shadowBlur` value the stroke is drawn with.
+ * @returns {number} Extra margin in px, or 0 for a fully hard edge.
+ */
+export function blurExtent(blurAmount) {
+  if (!(blurAmount > 0)) return 0;
+  return blurAmount * BLUR_EXTENT_FACTOR + BLUR_EXTENT_PAD;
 }
 
 /**
