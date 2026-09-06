@@ -175,9 +175,12 @@ export class TouchHandler {
 
       if (this.app.self.tool !== 'text') {
         this.ui.hideCursor();
-        if (this.wsClient && this.wsClient.connected) {
-          this.wsClient.broadcastHideCursor();
-        }
+        // Queued, not sent inline: a finger's pointerdown fires before this
+        // touchstart and queues a SHOW, which would otherwise drain after an
+        // inline HIDE and re-reveal this user's cursor/name to every peer for
+        // the rest of the gesture. App.broadcastCursorVisibility re-checks the
+        // gesture at drain time and drops that stale SHOW.
+        this.app.broadcastCursorVisibility(false);
       }
 
       this.state.initialDistance = this.getDistance(e.touches);
@@ -309,9 +312,7 @@ export class TouchHandler {
       
       if (this.app.isOnBoard || this.app.self.tool === 'text') {
         this.ui.showCursor();
-        if (this.wsClient && this.wsClient.connected) {
-          this.wsClient.broadcastShowCursor();
-        }
+        this.app.broadcastCursorVisibility(true);
       }
     }
   }

@@ -4444,9 +4444,9 @@ export class DrawingApp {
     this._updateBlurCannotDraw();
 
     if (tool === 'pan') {
-      if (this.connected) this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastHideCursor());
+      if (this.connected) this.broadcastCursorVisibility(false);
     } else if (previousTool === 'pan') {
-      if (this.connected) this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastShowCursor());
+      if (this.connected) this.broadcastCursorVisibility(true);
     }
 
     if (tool === 'text') {
@@ -5467,9 +5467,44 @@ export class DrawingApp {
       && pos.y >= 0 && pos.y <= board.getHeight();
   }
 
+  /**
+   * True while a two-finger viewport gesture (pan / zoom / rotate) is running.
+   * The pointer stream behind such a gesture is fingers moving the viewport,
+   * not a cursor any peer should see.
+   *
+   * @returns {boolean}
+   */
+  isTouchGestureActive() {
+    const state = this.touchHandler?.state;
+    return !!state && (state.isPinching || state.gestureStartedWithTwoFingers);
+  }
+
+  /**
+   * Queue a cursor show/hide broadcast for peers.
+   *
+   * Every cursor-visibility broadcast goes through here so the gesture check
+   * runs at *drain* time, not at queue time. A finger's pointerdown fires
+   * before the touchstart that starts the gesture, so it queues a SHOW that
+   * used to drain after the gesture's HIDE — leaving the drawer's cursor and
+   * name parked on every peer's screen for the whole pan/zoom/rotate.
+   *
+   * @param {boolean} visible - Whether peers should see this user's cursor.
+   * @returns {void}
+   */
+  broadcastCursorVisibility(visible) {
+    if (!this.connected) return;
+    if (visible && this.isTouchGestureActive()) return;
+    this.inputBufferManager.queueBroadcast(() => {
+      if (visible && this.isTouchGestureActive()) return;
+      if (visible) this.wsClient.broadcastShowCursor();
+      else this.wsClient.broadcastHideCursor();
+    });
+  }
+
   syncBoardHoverState(isOnBoard, { forceRefresh = false, event = null } = {}) {
     const cursorHidden = this.ui?.elements?.selfCursor?.style.display === 'none';
     const shouldRefresh = forceRefresh || (isOnBoard && cursorHidden);
+    const inTouchGesture = this.isTouchGestureActive();
     if (this.isOnBoard === isOnBoard && !shouldRefresh) {
       return;
     }
@@ -5481,14 +5516,11 @@ export class DrawingApp {
       if (event && this._isPointerOnUiControl(event.target)) {
         this.ui.hideCursor();
         if (this.connected) {
-          this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastHideCursor());
+          this.broadcastCursorVisibility(false);
         }
         return;
       }
 
-      const inTouchGesture =
-        this.touchHandler.state.isPinching ||
-        this.touchHandler.state.gestureStartedWithTwoFingers;
       if (inTouchGesture && this.self.tool !== 'text') {
         return;
       }
@@ -5503,9 +5535,9 @@ export class DrawingApp {
       }
       if (this.connected) {
         if ((this.self.panning || this.self.tool === 'pan') && !isTextWithContent) {
-          this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastHideCursor());
+          this.broadcastCursorVisibility(false);
         } else {
-          this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastShowCursor());
+          this.broadcastCursorVisibility(true);
         }
       }
       return;
@@ -5522,12 +5554,12 @@ export class DrawingApp {
       if (this._isPointerOnUiControl(event.target)) {
         this.ui.hideCursor();
         if (this.connected) {
-          this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastHideCursor());
+          this.broadcastCursorVisibility(false);
         }
         return;
       }
       this.isOnBoard = true;
-      if (shouldRefresh) {
+      if (shouldRefresh && !(inTouchGesture && this.self.tool !== 'text')) {
         this.ui.showCursor();
         if (this.self.panning && this.self.tool !== 'pan') {
           this.ui.showPanCursor();
@@ -5541,7 +5573,7 @@ export class DrawingApp {
 
     this.ui.hideCursor();
     if (this.connected) {
-      this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastHideCursor());
+      this.broadcastCursorVisibility(false);
     }
   }
 
@@ -5874,7 +5906,7 @@ export class DrawingApp {
 
       const isTextWithContent = this.self.tool === 'text' && this.self.text;
       if (!isTextWithContent) {
-        this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastHideCursor());
+        this.broadcastCursorVisibility(false);
         this.ui.showPanCursor();
       }
       return;
@@ -6292,7 +6324,7 @@ export class DrawingApp {
       this.self.panning = false;
       this.self.mousedown = false;
       this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastPan(false));
-      this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastShowCursor());
+      this.broadcastCursorVisibility(true);
       this.ui.hidePanCursor(this.self.tool, this.self);
       return;
     }
@@ -6495,7 +6527,7 @@ export class DrawingApp {
 
       const isTextWithContent = this.self.tool === 'text' && this.self.text;
       if (!isTextWithContent) {
-        this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastHideCursor());
+        this.broadcastCursorVisibility(false);
         this.ui.showPanCursor();
       }
 
@@ -6579,7 +6611,7 @@ export class DrawingApp {
     if (e.button === 1) {
       this.self.panning = false;
       this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastPan(false));
-      this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastShowCursor());
+      this.broadcastCursorVisibility(true);
       this.ui.hidePanCursor(this.self.tool, this.self);
     }
 
