@@ -1608,6 +1608,11 @@ function isShadowHiddenFromViewer(subjectUser, viewer) {
 function isCursorEffectivelyHidden(user, now = Date.now()) {
   if (!user) return true;
   if (user.cursorHidden) return true;
+  // Muting broadcasts HIDE_CURSOR to the room, but that is a one-shot message:
+  // anyone joining later only learns cursor state from this flag, and the muted
+  // user's own SHOW_CURSOR (sent whenever their pointer crosses the board) used
+  // to clear cursorHidden again. Mute means no cursor, full stop.
+  if (user.isMuted) return true;
   if (user.tool === Tool.TEXT && user.text) return false;
 
   const lastActivity = Number(user.cursorLastActivity || 0);
@@ -2567,6 +2572,14 @@ async function handleBroadcast(data, sessionIndex, room, ws) {
       break;
 
     case T.SHOW_CURSOR:
+      // A muted user's pointer entering the board still fires this, and
+      // relaying it put their cursor back on every peer's screen at its stale
+      // last-known position — visible presence from someone with no board
+      // access. Their own client keeps drawing its local cursor either way.
+      if (ws?.isMuted) {
+        user.cursorHidden = true;
+        return;
+      }
       user.cursorHidden = false;
       user.cursorLastActivity = Date.now();
       break;

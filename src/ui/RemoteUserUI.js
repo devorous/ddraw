@@ -65,6 +65,10 @@ export class RemoteUserUI {
     this._groupUserIndex = new Map();
     this._lastNotifyActiveAt = new Map();
     this._activeHighlightTimers = new Map();
+    // Muted users, so setRemoteUserMuted can act on the transition only: it is
+    // called for every user on every USERS broadcast, and re-showing a cursor
+    // unconditionally there would resurrect every idle-hidden cursor.
+    this._mutedUsers = new Set();
 
     this._pendingCursorWrites = new Map(); // userId -> {x, y, size}
     this._cursorFlushScheduled = false;
@@ -272,6 +276,25 @@ export class RemoteUserUI {
     this._cursorIdleDeadlines.delete(userId);
   }
 
+  /**
+   * True when this user's cursor must stay retired regardless of what activity
+   * arrives: they asked for it to be hidden (HIDE_CURSOR — pointer off the
+   * board), or they are muted.
+   *
+   * Mute is included because muting broadcasts HIDE_CURSOR but does not stop
+   * the *non*-board messages a muted user still emits (SHOW_CURSOR when their
+   * pointer crosses the board on the way to the chat box, tool/size changes).
+   * Each of those re-showed the cursor at its stale pre-mute position, so a
+   * muted user typing in chat flashed a ghost cursor onto every peer's board.
+   *
+   * @param {string} userId - User's session ID
+   * @returns {boolean}
+   */
+  _isCursorSuppressed(userId) {
+    const user = window.app?.users?.get(Number(userId));
+    return !!(user?.cursorHidden || user?.isMuted);
+  }
+
   _isRemoteTextActive(userId) {
     const user = window.app?.users?.get(Number(userId));
     if (!user) return false;
@@ -287,7 +310,7 @@ export class RemoteUserUI {
     const cursorElements = this.cursors.get(userId);
     if (!cursorElements) return;
 
-    if (!visible) {
+    if (!visible || this._isCursorSuppressed(userId)) {
       cursorElements.cursor.style.display = 'none';
       cursorElements.circle.style.display = 'none';
       cursorElements.square.style.display = 'none';
@@ -387,8 +410,7 @@ export class RemoteUserUI {
       return;
     }
 
-    const user = window.app?.users?.get(Number(userId));
-    if (user?.cursorHidden) {
+    if (this._isCursorSuppressed(userId)) {
       this._clearCursorIdleTimer(userId);
       this._setCursorLayerVisibility(userId, false);
       return;
@@ -477,7 +499,13 @@ export class RemoteUserUI {
     this._replayModeActive = !!active;
 
     for (const userId of this.cursors.keys()) {
-      this._setUserVisibility(userId, !this._shouldSuppressLiveUser(userId));
+      const visible = !this._shouldSuppressLiveUser(userId);
+      this._setUserVisibility(userId, visible);
+      // Leaving replay restores every element wholesale; a cursor that was
+      // retired (pointer off the board, or muted) must not ride back in on it.
+      if (visible && this._isCursorSuppressed(userId)) {
+        this._setCursorLayerVisibility(userId, false);
+      }
     }
 
     for (const group of this.userGroups.values()) {
@@ -1118,6 +1146,11 @@ export class RemoteUserUI {
       this._setUserVisibility(userId, false);
       return;
     }
+    // The tool shapes (circle/square/crosshair) live in the shared cursors SVG,
+    // not under the per-user `.cursor` wrapper, so painting them here would
+    // show them even while that wrapper is hidden. _setCursorLayerVisibility
+    // re-applies the current tool when the cursor legitimately comes back.
+    if (this._isCursorSuppressed(userId)) return;
     this._applyRemoteToolDisplay(userId, tool);
     this._scheduleCursorIdleHide(userId);
   }
@@ -1222,6 +1255,20 @@ export class RemoteUserUI {
 
   setRemoteUserMuted(userId, muted) {
     const id = `u${userId}`;
+    const key = String(userId);
+    const wasMuted = this._mutedUsers.has(key);
+    if (muted) this._mutedUsers.add(key);
+    else this._mutedUsers.delete(key);
+
+    if (muted && !wasMuted) {
+      this.hideRemoteCursor(userId);
+    } else if (!muted && wasMuted && !this._isCursorSuppressed(userId)) {
+      // The unmute's SHOW_CURSOR arrives before the USERS row that clears
+      // isMuted, so it is swallowed by the suppression check above; bring the
+      // cursor back here instead of waiting for their next pointer move.
+      this.showRemoteCursor(userId);
+    }
+
     const entry = document.querySelector(`.userEntry.${id}`);
     const userEl = document.querySelector(`.listUser.${id}`);
     this._applyMutedStateToEntry(entry, userEl, muted);
@@ -1351,6 +1398,7 @@ export class RemoteUserUI {
    */
   removeRemoteUser(userId) {
     this._clearCursorIdleTimer(userId);
+    this._mutedUsers.delete(String(userId));
     const id = `u${userId}`;
     document.querySelector(`.cursor.${id}`)?.remove();
     document.querySelector(`.circle.${id}`)?.remove();
