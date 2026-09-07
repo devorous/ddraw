@@ -344,8 +344,9 @@ export class RemoteUserHandler {
 
   /**
    * Throttled entry point for brush/line/rectangle/circle/erase's remote
-   * preview render (`renderRemotePreview`), which itself unconditionally does
-   * a full-board `clearRect` on `user.context` — see REMOTE_PREVIEW_INTERVAL_MS.
+   * preview render (`renderRemotePreview`), which full-board `clearRect`s
+   * `user.context` for every tool in its `needsClear` list (erase clears only
+   * its own dirty rect) — see REMOTE_PREVIEW_INTERVAL_MS.
    * Mirrors RemoteInkHandler._requestPreviewRender / RemotePenHandler's
    * equivalent: only the RENDER is deferred, never the state used to produce
    * it (`user.currentLine` etc. are already fully updated by the time this is
@@ -764,7 +765,14 @@ export class RemoteUserHandler {
    */
   renderRemotePreview(user, pos) {
     this._setUserLayerContent(user, true);
-    const needsClear = ['brush', 'line', 'rectangle', 'circle', 'erase', 'text'].includes(user.tool);
+    // 'erase' is deliberately absent: the eraser owns its preview surface and
+    // clears only the rect it is about to repaint (EraserTool.refreshPreview).
+    // Its mask is cumulative while its dirty rect covers just the newest
+    // segment, so a full clear here erased everything but that segment every
+    // frame — a blocky preview that flickered and kept dropping the part
+    // already erased, only to come out right at mouse-up (the commit path
+    // never reads the preview).
+    const needsClear = ['brush', 'line', 'rectangle', 'circle', 'text'].includes(user.tool);
     if (needsClear && !(user.tool === 'select' && user.floatingCanvas)) {
       user.context.clearRect(0, 0, this.board.getWidth(), this.board.getHeight());
     }
@@ -830,19 +838,13 @@ export class RemoteUserHandler {
         // local reconstruction from cursor motion.
         break;
 
-      case 'erase': {
-        // drawPreview's `rect?.drawImage` shim treats a bare context as "no
-        // rect" and draws the whole board — the local path avoids this by
-        // always computing getPreviewDirtyRect() first (see onPointerDown/
-        // onPointerMove) and skipping the call entirely when it's `false`
-        // (nothing new since the last preview), but this call site never
-        // did either, so every remote MM paid a full-board maskCanvas copy
-        // where a clipped (or skipped) one would do.
-        const eraserTool = this.toolManager.getTool('erase');
-        const dirtyRect = eraserTool?.getPreviewDirtyRect(user);
-        if (dirtyRect !== false) eraserTool?.drawPreview(user, dirtyRect, user.context);
+      case 'erase':
+        // Same clear-then-repaint-the-dirty-rect path the local eraser takes.
+        // Going straight to drawPreview here (as this used to) also hit its
+        // `rect?.drawImage` shim, which treats a bare context as "no rect" and
+        // copies the whole mask canvas on every arriving MM.
+        this.toolManager.getTool('erase')?.refreshPreview(user);
         break;
-      }
 
     }
 

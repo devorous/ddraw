@@ -73,11 +73,7 @@ export class EraserTool extends Tool {
     // a composite of its own thereafter.
     this.board.requestUpdate();
 
-    const rect = this.getPreviewDirtyRect(user);
-    if (rect !== false) {
-      this._clearPreview(user, rect);
-      this.drawPreview(user, rect, this._getPreviewContext(user));
-    }
+    this.refreshPreview(user);
   }
 
   /**
@@ -90,12 +86,30 @@ export class EraserTool extends Tool {
     if (!user.mousedown || user.panning) return;
 
     this.appendBufferedPoint(user, pos);
-    const rect = this.getPreviewDirtyRect(user);
-    if (rect !== false) {
-      this._clearPreview(user, rect);
-      this.drawPreview(user, rect, this._getPreviewContext(user));
-    }
+    this.refreshPreview(user);
     this.lastPos.set(this._getUserId(user), { x: pos.x, y: pos.y });
+  }
+
+  /**
+   * Repaint this user's eraser preview from the accumulated mask.
+   *
+   * The mask is cumulative but the dirty rect only covers what was stamped
+   * since the last preview, so the clear MUST be scoped to that same rect —
+   * wiping the whole preview surface and then blitting one segment back leaves
+   * only the newest segment visible, which reads as a blocky, flickering
+   * stroke that keeps losing the part already erased. Local and remote strokes
+   * share this for exactly that reason.
+   *
+   * @param {Object} user - The erasing user.
+   * @returns {boolean} False when nothing new has been stamped since the last
+   *   preview, in which case the existing preview is left untouched.
+   */
+  refreshPreview(user) {
+    const rect = this.getPreviewDirtyRect(user);
+    if (rect === false) return false;
+    this._clearPreview(user, rect);
+    this.drawPreview(user, rect, this._getPreviewContext(user));
+    return true;
   }
 
   onPointerMoveNoRender(user, pos, lastPos) {
