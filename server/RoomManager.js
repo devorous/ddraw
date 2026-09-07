@@ -455,10 +455,17 @@ export class Room {
 
   /**
    * Checks if the snapshot timer should be running based on current clients.
+   *
+   * Runs for every room, not just persist-eligible ones: the periodic
+   * snapshot is what advances the in-memory join/resync watermark
+   * (addSnapshot in handleSnapshotSave), independent of whether the result
+   * ever reaches DB/R2. An unregistered room that never checkpoints has no
+   * way to bound its command-log tail, so a resync after any real amount of
+   * activity has to replay the whole session from seq 0.
    */
   updateSnapshotTimer() {
     const hasClients = this._getSnapshotCandidates().length > 0;
-    const shouldRun = this.canPersistSnapshots() && hasClients;
+    const shouldRun = hasClients;
     if (shouldRun && !this._snapshotTimer) {
       this.startSnapshotTimer();
     } else if (!shouldRun && this._snapshotTimer) {
@@ -484,11 +491,13 @@ export class Room {
 
   /**
    * Picks the best-scoring connected client and sends a snapshot request.
+   *
+   * Not gated on canPersistSnapshots() — see updateSnapshotTimer(). The reply
+   * still lands in handleSnapshotSave, which is where DB/R2 persistence is
+   * actually decided.
    * @private
    */
   _requestSnapshot() {
-    if (!this.canPersistSnapshots()) return;
-
     // A socket joins this.clients at handshake, BEFORE its T.CONNECT allocates a
     // sessionIndex. Asking one is a wasted cycle: markSnapshotRequestPending
     // can't record a non-finite index, so the reply fails the isServerRequested

@@ -279,8 +279,10 @@ export async function handleSnapshotSave(ws, data, room) {
   const allowDevSaves = process.env.ALLOW_DEV_SNAPSHOTS === 'true';
 
   // Manual saves and auto-saves still go to in-memory buffer regardless of DB
-  // but we skip the expensive DB/R2 part if not authorized
-  const shouldPersist = isProd || allowDevSaves;
+  // but we skip the expensive DB/R2 part if not authorized OR the room is
+  // unregistered/ephemeral (canPersistSnapshots() — see handleSnapshotSave's
+  // pin gate above for why pinning alone is denied earlier and harder).
+  const shouldPersist = (isProd || allowDevSaves) && !!room?.canPersistSnapshots?.();
 
   // Server-initiated auto-snapshots: any user who was explicitly asked may respond.
   // Manual saves require Trusted+ unless the user is alone in the room.
@@ -298,10 +300,14 @@ export async function handleSnapshotSave(ws, data, room) {
     if (wantsPin) await denyStartStateChange(ws, room, 'You do not have permission to save a board snapshot here');
     return;
   }
-  if (!room?.canPersistSnapshots?.()) {
-    if (wantsPin) {
-      await denyStartStateChange(ws, room, 'This room is unregistered, so it cannot keep a saved board state');
-    }
+  // Pinning a room start state is a DB-backed feature and stays registered-only.
+  // A plain (auto or manual) save is NOT returned here for an unregistered room:
+  // it still needs to reach room.addSnapshot() below so the in-memory join/
+  // resync watermark advances — otherwise an ephemeral room's command-log tail
+  // never gets a checkpoint to bound it. The DB/R2 block further down is what
+  // actually gates on canPersistSnapshots().
+  if (wantsPin && !room?.canPersistSnapshots?.()) {
+    await denyStartStateChange(ws, room, 'This room is unregistered, so it cannot keep a saved board state');
     return;
   }
   if (wantsPin && !canManageStartState(ws, room)) {
