@@ -2630,6 +2630,16 @@ export class SelectTool extends Tool {
     let paint = null;
     let warpBounds = null;
 
+    // A windowed active-stroke canvas's local origin is `active.origin`, not
+    // board (0,0) — every draw below uses board-absolute coordinates, so they
+    // need translating into the canvas's own local space first. See
+    // windowed_canvas_needs_ctx_translate memory: this must wrap every draw
+    // call site here, not just the allocation in beginUserStroke.
+    const ox = active.origin?.x ?? 0;
+    const oy = active.origin?.y ?? 0;
+    if (ox || oy) active.ctx.save();
+    if (ox || oy) active.ctx.translate(-ox, -oy);
+
     if (hasTransform) {
       if (!this.homography) this.homography = new Homography('projective');
       const result = performHomographyTransform({
@@ -2661,6 +2671,7 @@ export class SelectTool extends Tool {
     for (const { region } of mirrorTargets) {
       this.board.withMirroredRegionTransform(active.ctx, region, () => paint(active.ctx));
     }
+    if (ox || oy) active.ctx.restore();
     return warpBounds;
   }
 
@@ -2715,13 +2726,16 @@ export class SelectTool extends Tool {
     const lm = this.board.layerManager;
     if (!lm) return false;
 
-    lm.beginUserStroke(layerIdx, userId, 'destination-out');
+    // Bounds for the erased region, including any mirrored copies — computed up
+    // front so it doubles as the windowed active-stroke canvas's bounds hint.
+    const dirty = this.board.unionWithMirrorTargets(s, mirrorTargets);
+
+    lm.beginUserStroke(layerIdx, userId, 'destination-out', undefined, dirty);
     const active = lm.layerGroups[layerIdx]?.activeStrokeByUser.get(userId);
     if (!active) return false;
 
     // Pin dirty rect to the erased bounds so commitUserStroke doesn't drop it —
     // it crops the stroke to this rect, so the mirrored copies must be inside.
-    const dirty = this.board.unionWithMirrorTargets(s, mirrorTargets);
     if (active.dirtyRect) {
       active.dirtyRect.minX = dirty.x;
       active.dirtyRect.minY = dirty.y;
@@ -2746,9 +2760,14 @@ export class SelectTool extends Tool {
     // pixel-aligned and antialiases nothing, so it skips the extra work.
     // RemoteSelectionHandler._eraseSelectionFromLayer must make the same call.
     if (needsHardenedEraseMask(lassoPath, mirrorTargets, s)) {
-      paintHardenedEraseMask(active.ctx, dirty, paintErase);
+      paintHardenedEraseMask(active.ctx, dirty, paintErase, active.origin);
     } else {
+      const ox = active.origin?.x ?? 0;
+      const oy = active.origin?.y ?? 0;
+      if (ox || oy) active.ctx.save();
+      if (ox || oy) active.ctx.translate(-ox, -oy);
       paintErase(active.ctx);
+      if (ox || oy) active.ctx.restore();
     }
 
     const user = this.board.app?.self;
@@ -2805,12 +2824,14 @@ export class SelectTool extends Tool {
         : Date.now();
 
       let attachedSelectionRestoreData = false;
+      const commitBounds = { x: dirtyX, y: dirtyY, width: dirtyW, height: dirtyH };
       for (const { canvas, groupIdx } of this.floatingLayers) {
         lm.beginUserStroke(
           groupIdx,
           userId,
           this._getSelectionCommitBlendMode(groupIdx),
-          this._getSelectionCommitBlendBakeMode()
+          this._getSelectionCommitBlendBakeMode(),
+          commitBounds
         );
         const active = lm.layerGroups[groupIdx]?.activeStrokeByUser.get(userId);
         if (!active) continue;
@@ -2869,34 +2890,13 @@ export class SelectTool extends Tool {
 
     const activeLayer = this.board.app?.self?.activeLayer ?? 0;
 
-    // Begin a new stroke on the active layer so this paste is undoable
-    lm.beginUserStroke(
-      activeLayer,
-      userId,
-      this._getSelectionCommitBlendMode(activeLayer),
-      this._getSelectionCommitBlendBakeMode()
-    );
-    const active = lm.layerGroups[activeLayer]?.activeStrokeByUser.get(userId);
-    if (!active) {
-      this.floatingCanvas = null;
-      this.floatingCtx = null;
-      this.selectedImageData = null;
-      this._sourceCropForRemote = null;
-      this._updateFloatingSelectionBlendPreview();
-      this.board.clearTop();
-      // Still broadcast commit to sync with other users even if stroke creation failed
-      if (this.board.app?.wsClient) {
-        this._broadcastSelectionCommit(activeLayer);
-      }
-      return;
-    }
-
     // Calculate dirty rect bounds for tracking
     let dirtyX, dirtyY, dirtyWidth, dirtyHeight;
 
-    // Where the unmirrored paint will land. Resolved BEFORE drawing so the mirror
-    // targets (and therefore the stroke's dirty rect) are known up front —
-    // commitUserStroke crops to that rect and would drop the mirrored pixels.
+    // Where the unmirrored paint will land. Resolved BEFORE beginUserStroke so both
+    // the mirror targets/dirty rect AND the windowed active-stroke bounds are known
+    // up front — commitUserStroke crops the stroke to the dirty rect and would drop
+    // the mirrored pixels otherwise.
     const hasTransform = this.needsHomographyTransform();
     const commitOutputBounds = hasTransform ? this._getWarpOutputBounds() : null;
     const paintRect = commitOutputBounds
@@ -2913,6 +2913,29 @@ export class SelectTool extends Tool {
         height: this.selection.height
       };
     const { targets: mirrorTargets, dirty } = this._getFloatingMirrorPlan(paintRect);
+
+    // Begin a new stroke on the active layer so this paste is undoable
+    lm.beginUserStroke(
+      activeLayer,
+      userId,
+      this._getSelectionCommitBlendMode(activeLayer),
+      this._getSelectionCommitBlendBakeMode(),
+      dirty
+    );
+    const active = lm.layerGroups[activeLayer]?.activeStrokeByUser.get(userId);
+    if (!active) {
+      this.floatingCanvas = null;
+      this.floatingCtx = null;
+      this.selectedImageData = null;
+      this._sourceCropForRemote = null;
+      this._updateFloatingSelectionBlendPreview();
+      this.board.clearTop();
+      // Still broadcast commit to sync with other users even if stroke creation failed
+      if (this.board.app?.wsClient) {
+        this._broadcastSelectionCommit(activeLayer);
+      }
+      return;
+    }
 
     // Draw the floating selection (with optional transform) into the stroke canvas
     const warpBounds = this._drawFloatingToActiveStroke(
@@ -3773,10 +3796,12 @@ export class SelectTool extends Tool {
     // Stamp the merged content onto the target layer as a single source-over
     // stroke. Visual z-order is already correct in the merged canvas (the
     // flatten range was chosen so target's content sits above source's).
-    lm.beginUserStroke(targetLayer, userId, 'source-over');
+    lm.beginUserStroke(targetLayer, userId, 'source-over', undefined, s);
     const active = lm.layerGroups[targetLayer]?.activeStrokeByUser.get(userId);
     if (active) {
-      active.ctx.drawImage(mergedCanvas, s.x, s.y);
+      const ox = active.origin?.x ?? 0;
+      const oy = active.origin?.y ?? 0;
+      active.ctx.drawImage(mergedCanvas, s.x - ox, s.y - oy);
       if (active.dirtyRect) {
         active.dirtyRect.minX = s.x;
         active.dirtyRect.minY = s.y;
@@ -4098,12 +4123,14 @@ export class SelectTool extends Tool {
       ? tileOwnership.getTileIndicesForRect(dirtyX, dirtyY, dirtyW, dirtyH)
       : [];
 
+    const stampBounds = { x: dirtyX, y: dirtyY, width: dirtyW, height: dirtyH };
     for (const { canvas, groupIdx } of layers) {
       lm.beginUserStroke(
         groupIdx,
         userId,
         this._getSelectionCommitBlendMode(groupIdx),
-        this._getSelectionCommitBlendBakeMode()
+        this._getSelectionCommitBlendBakeMode(),
+        stampBounds
       );
       const active = lm.layerGroups[groupIdx]?.activeStrokeByUser.get(userId);
       if (!active) continue;

@@ -43,9 +43,13 @@ const HARDEN_PASSES = 12;
  * @param {(ctx: CanvasRenderingContext2D) => void} paint - Draws the shape(s) in
  *   BOARD coordinates. The ctx it receives is pre-translated, so callers use the
  *   same coordinates they would on the target.
+ * @param {{x:number,y:number}} [targetOrigin] - `targetCtx`'s canvas's own
+ *   board-absolute origin, when it's a windowed (non-full-board) active-stroke
+ *   canvas — see `windowed_canvas_needs_ctx_translate` memory. Omitted (default)
+ *   for a full-board target, matching the identity-origin behavior this always had.
  * @returns {boolean} false when `dirty` is empty and nothing was painted.
  */
-export function paintHardenedEraseMask(targetCtx, dirty, paint) {
+export function paintHardenedEraseMask(targetCtx, dirty, paint, targetOrigin = null) {
   if (!targetCtx || !dirty || typeof paint !== 'function') return false;
 
   const x0 = Math.floor(dirty.x);
@@ -68,11 +72,13 @@ export function paintHardenedEraseMask(targetCtx, dirty, paint) {
 
   for (let i = 0; i < HARDEN_PASSES; i++) maskCtx.drawImage(mask, 0, 0);
 
+  const tox = targetOrigin?.x ?? 0;
+  const toy = targetOrigin?.y ?? 0;
   targetCtx.save();
   targetCtx.setTransform(1, 0, 0, 1, 0, 0);
   targetCtx.globalAlpha = 1;
   targetCtx.globalCompositeOperation = 'source-over';
-  targetCtx.drawImage(mask, x0, y0);
+  targetCtx.drawImage(mask, x0 - tox, y0 - toy);
   targetCtx.restore();
   return true;
 }

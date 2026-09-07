@@ -944,6 +944,15 @@ export class RemoteSelectionHandler {
     let paint = null;
     let dirty = null;
 
+    // A windowed active-stroke canvas's local origin is `active.origin`, not
+    // board (0,0) — every draw below uses board-absolute coordinates, so they
+    // need translating into the canvas's own local space first. See
+    // windowed_canvas_needs_ctx_translate memory.
+    const ox = active.origin?.x ?? 0;
+    const oy = active.origin?.y ?? 0;
+    if (ox || oy) active.ctx.save();
+    if (ox || oy) active.ctx.translate(-ox, -oy);
+
     if (hasTransform && user.originalCorners) {
       try {
         const warp = getHomography();
@@ -990,6 +999,7 @@ export class RemoteSelectionHandler {
       this.board.withMirroredRegionTransform(active.ctx, region, () => paint(active.ctx));
     }
 
+    if (ox || oy) active.ctx.restore();
     return this.board.unionWithMirrorTargets(dirty, mirrorTargets);
   }
 
@@ -1062,6 +1072,22 @@ export class RemoteSelectionHandler {
       ? user.floatingLayers
       : [{ canvas: user.floatingCanvas, groupIdx: layerIdx }];
 
+    // Predicted paint rect for the windowed active-stroke bounds hint — the real
+    // dirty rect (from `_drawLiftedCanvasToActiveStroke`) isn't known until after
+    // `beginUserStroke`, same as SelectTool.commitSelection's single-layer branch.
+    // The warp's actual output can differ slightly from this prediction; the 32px
+    // pad on `_computeWindowedBounds` covers that, same as brush's line caps.
+    const predictedPaintRect = outputBounds
+      ? {
+        x: Math.round(outputBounds.minX),
+        y: Math.round(outputBounds.minY),
+        width: Math.ceil(outputBounds.width),
+        height: Math.ceil(outputBounds.height)
+      }
+      : rect;
+    const predictedMirrorTargets = this.board.getSelectionMirrorTargets(predictedPaintRect, mirrored);
+    const strokeBounds = this.board.unionWithMirrorTargets(predictedPaintRect, predictedMirrorTargets);
+
     // One shared timestamp so a single Ctrl+Z reverses the whole multi-layer
     // stamp, exactly as it does on the drawer.
     const batchTimestamp = targets.length > 1
@@ -1076,7 +1102,7 @@ export class RemoteSelectionHandler {
     for (const { canvas, groupIdx } of targets) {
       // Begin a stroke on the target layer so the committed pixels enter the
       // layer system and persist through compositeAllLayers() calls.
-      lm.beginUserStroke(groupIdx, user.id, 'source-over');
+      lm.beginUserStroke(groupIdx, user.id, 'source-over', undefined, strokeBounds);
       const active = lm.layerGroups[groupIdx]?.activeStrokeByUser.get(user.id);
       if (!active) continue;
 
@@ -1269,34 +1295,7 @@ export class RemoteSelectionHandler {
       const lm = this.board.layerManager;
       const layerIdx = layerIndex ?? user.activeLayer ?? 0;
 
-      lm.beginUserStroke(layerIdx, user.id, user.blendMode || 'source-over');
-      const active = lm.layerGroups[layerIdx]?.activeStrokeByUser.get(user.id);
-      if (!active) return;
-
-      const layerCtx = active.ctx;
-      layerCtx.globalAlpha = userOpacity;
-
-      // Set fill style (pattern or solid color)
-      if (usePattern && patternTile) {
-        const pattern = layerCtx.createPattern(patternTile, 'repeat');
-        if (pattern.setTransform) {
-          const scale = getPatternDrawScale(user, patternTile);
-          const offsetX = user.patternOffsetX || 0;
-          const offsetY = user.patternOffsetY || 0;
-          const rotation = user.patternRotation || 0;
-          const matrix = new DOMMatrix()
-            .translate(offsetX, offsetY)
-            .rotate(rotation)
-            .scale(scale);
-          pattern.setTransform(matrix);
-        }
-        layerCtx.fillStyle = pattern;
-      } else {
-        layerCtx.fillStyle = colorString;
-      }
-
       const path = firmLassoPath || user.lassoPath || (user.pendingLassoPath && user.pendingLassoPath.length >= 3 ? user.pendingLassoPath : null);
-      let paintFill;
       if (path) {
         // Recalculate bounds from path to ensure dirty rect covers the entire shape
         // (User selection bounds might be stale or not perfectly aligned with path)
@@ -1332,7 +1331,43 @@ export class RemoteSelectionHandler {
         const cw = Math.min(sx1, ix + iw) - cx;
         const ch = Math.min(sy1, iy + ih) - cy;
         if (cw > 0 && ch > 0) { ix = cx; iy = cy; iw = cw; ih = ch; }
+      }
 
+      // The drawer fills every active mirror region too (SelectTool.fillSelection),
+      // so the windowed active-stroke bounds (and the tracked dirty rect below)
+      // must span the mirrored copies just as much as the unmirrored fill.
+      const fillRect = { x: ix, y: iy, width: iw, height: ih };
+      const mirrorTargets = this.board.getSelectionMirrorTargets(fillRect, mirrored);
+      const strokeBounds = this.board.unionWithMirrorTargets(fillRect, mirrorTargets);
+
+      lm.beginUserStroke(layerIdx, user.id, user.blendMode || 'source-over', undefined, strokeBounds);
+      const active = lm.layerGroups[layerIdx]?.activeStrokeByUser.get(user.id);
+      if (!active) return;
+
+      const layerCtx = active.ctx;
+      layerCtx.globalAlpha = userOpacity;
+
+      // Set fill style (pattern or solid color)
+      if (usePattern && patternTile) {
+        const pattern = layerCtx.createPattern(patternTile, 'repeat');
+        if (pattern.setTransform) {
+          const scale = getPatternDrawScale(user, patternTile);
+          const offsetX = user.patternOffsetX || 0;
+          const offsetY = user.patternOffsetY || 0;
+          const rotation = user.patternRotation || 0;
+          const matrix = new DOMMatrix()
+            .translate(offsetX, offsetY)
+            .rotate(rotation)
+            .scale(scale);
+          pattern.setTransform(matrix);
+        }
+        layerCtx.fillStyle = pattern;
+      } else {
+        layerCtx.fillStyle = colorString;
+      }
+
+      let paintFill;
+      if (path) {
         paintFill = () => {
           layerCtx.save();
           layerCtx.beginPath();
@@ -1349,16 +1384,20 @@ export class RemoteSelectionHandler {
         paintFill = () => layerCtx.fillRect(ix, iy, iw, ih);
       }
 
-      paintFill();
+      // A windowed active-stroke canvas's local origin is `active.origin`, not
+      // board (0,0) — `paintFill`/pattern setup above use board-absolute
+      // coordinates, so translate into the canvas's own local space first. See
+      // windowed_canvas_needs_ctx_translate memory.
+      const ox = active.origin?.x ?? 0;
+      const oy = active.origin?.y ?? 0;
+      if (ox || oy) layerCtx.save();
+      if (ox || oy) layerCtx.translate(-ox, -oy);
 
-      // The drawer fills every active mirror region too (SelectTool.fillSelection).
-      // This side did not, so until now a mirrored selection fill painted its
-      // reflected half on the drawer's screen and nowhere else.
-      const fillRect = { x: ix, y: iy, width: iw, height: ih };
-      const mirrorTargets = this.board.getSelectionMirrorTargets(fillRect, mirrored);
+      paintFill();
       for (const { region } of mirrorTargets) {
         this.board.withMirroredRegionTransform(layerCtx, region, paintFill);
       }
+      if (ox || oy) layerCtx.restore();
       layerCtx.globalAlpha = 1.0;
 
       const paintedRects = [fillRect, ...mirrorTargets.map(t => t.bounds)];
@@ -1405,14 +1444,31 @@ export class RemoteSelectionHandler {
     const s = user.selection;
     const c = user.selectionCorners;
 
-    lm.beginUserStroke(layerIdx, user.id, 'source-over');
-    const active = lm.layerGroups[layerIdx]?.activeStrokeByUser.get(user.id);
-    if (!active) return;
-
     // Shares the commit's painter: same warp handling, same mirror replay, same
     // "dirty rect must cover the mirrored copies" contract. The two used to be
     // separate copies of the homography block and drifted.
     const hasTransform = this.hasTransformedCorners(user);
+    const stampOutputBounds = hasTransform ? this._getWarpOutputBounds(user, c) : null;
+
+    // Predicted paint rect for the windowed active-stroke bounds hint, same
+    // approach as handleSelectionCommit — the real dirty rect isn't known until
+    // after beginUserStroke. The 32px pad on _computeWindowedBounds covers any
+    // small difference between this prediction and the warp's actual output.
+    const predictedStampRect = stampOutputBounds
+      ? {
+        x: Math.round(stampOutputBounds.minX),
+        y: Math.round(stampOutputBounds.minY),
+        width: Math.ceil(stampOutputBounds.width),
+        height: Math.ceil(stampOutputBounds.height)
+      }
+      : { x: s.x, y: s.y, width: s.width, height: s.height };
+    const predictedStampMirrorTargets = this.board.getSelectionMirrorTargets(predictedStampRect, mirrored);
+    const stampBounds = this.board.unionWithMirrorTargets(predictedStampRect, predictedStampMirrorTargets);
+
+    lm.beginUserStroke(layerIdx, user.id, 'source-over', undefined, stampBounds);
+    const active = lm.layerGroups[layerIdx]?.activeStrokeByUser.get(user.id);
+    if (!active) return;
+
     const dirtyRect = this._drawLiftedCanvasToActiveStroke(
       user,
       active,
@@ -1565,10 +1621,12 @@ export class RemoteSelectionHandler {
     // Stamp merged content onto target layer as source-over. Visual z-order is
     // already correct in the merged canvas (flatten range was chosen so target
     // sits above source for 'up').
-    lm.beginUserStroke(targetLayer, userId, 'source-over');
+    lm.beginUserStroke(targetLayer, userId, 'source-over', undefined, intS);
     const active = lm.layerGroups[targetLayer]?.activeStrokeByUser.get(userId);
     if (active) {
-      active.ctx.drawImage(mergedCanvas, intS.x, intS.y);
+      const ox = active.origin?.x ?? 0;
+      const oy = active.origin?.y ?? 0;
+      active.ctx.drawImage(mergedCanvas, intS.x - ox, intS.y - oy);
       if (active.dirtyRect) {
         active.dirtyRect.minX = intS.x;
         active.dirtyRect.minY = intS.y;
@@ -1662,19 +1720,30 @@ export class RemoteSelectionHandler {
         if (group?.flatCanvas) {
           lm.writeToFlatCanvas(groupIdx, canvas, x, y);
         } else {
-          lm.beginUserStroke(groupIdx, user.id, 'source-over');
+          const bounds = { x, y, width: canvas.width, height: canvas.height };
+          lm.beginUserStroke(groupIdx, user.id, 'source-over', undefined, bounds);
           const active = lm.layerGroups[groupIdx]?.activeStrokeByUser.get(user.id);
           if (active) {
-            active.ctx.drawImage(canvas, x, y);
+            const ox = active.origin?.x ?? 0;
+            const oy = active.origin?.y ?? 0;
+            active.ctx.drawImage(canvas, x - ox, y - oy);
             lm.commitUserStroke(groupIdx, user.id);
           }
         }
       }
     } else {
-      lm.beginUserStroke(layerIdx, user.id, 'source-over');
+      const bounds = {
+        x: user.originalSelectionPos.x,
+        y: user.originalSelectionPos.y,
+        width: user.floatingCanvas.width,
+        height: user.floatingCanvas.height
+      };
+      lm.beginUserStroke(layerIdx, user.id, 'source-over', undefined, bounds);
       const active = lm.layerGroups[layerIdx]?.activeStrokeByUser.get(user.id);
       if (active) {
-        active.ctx.drawImage(user.floatingCanvas, user.originalSelectionPos.x, user.originalSelectionPos.y);
+        const ox = active.origin?.x ?? 0;
+        const oy = active.origin?.y ?? 0;
+        active.ctx.drawImage(user.floatingCanvas, user.originalSelectionPos.x - ox, user.originalSelectionPos.y - oy);
         lm.commitUserStroke(layerIdx, user.id);
       }
     }
@@ -2120,12 +2189,6 @@ export class RemoteSelectionHandler {
 
     const snapshots = [{ groupIdx: layerIdx, canvas: snap, x: s.x, y: s.y }];
 
-    lm.beginUserStroke(layerIdx, userId, 'destination-out');
-    const active = lm.layerGroups[layerIdx]?.activeStrokeByUser.get(userId);
-    if (!active) return null;
-
-    const ctx = active.ctx;
-
     // Ensure integer coordinates for consistent erasing
     let ix = Math.floor(s.x);
     let iy = Math.floor(s.y);
@@ -2163,6 +2226,25 @@ export class RemoteSelectionHandler {
       if (iw <= 0 || ih <= 0) { ix = sx0; iy = sy0; iw = sx1 - sx0; ih = sy1 - sy0; }
     }
 
+    // Mirrored counterparts ride in THIS stroke, not their own: they then share
+    // the erase's timestamp and seq, so a single reconcile orders the whole
+    // erase. Committed separately they would sit at seq 0, which
+    // _sortStrokeStack floats to the top of the stack as a permanent hole.
+    const mirrorTargets = this.board.getSelectionMirrorTargets(s, mirrored);
+
+    // Track the dirty region so the erase stroke is properly saved (and so it
+    // doubles as the windowed active-stroke canvas's bounds hint below). Must
+    // span the mirrored copies too — commitUserStroke crops the stroke to it.
+    const eraseDirty = this.board.unionWithMirrorTargets(
+      { x: ix, y: iy, width: iw, height: ih }, mirrorTargets
+    );
+
+    lm.beginUserStroke(layerIdx, userId, 'destination-out', undefined, eraseDirty);
+    const active = lm.layerGroups[layerIdx]?.activeStrokeByUser.get(userId);
+    if (!active) return null;
+
+    const ctx = active.ctx;
+
     const paintShape = (lassoPath && lassoPath.length >= 3)
       ? (c) => {
         c.fillStyle = 'white';
@@ -2179,18 +2261,6 @@ export class RemoteSelectionHandler {
         c.fillRect(ix, iy, iw, ih);
       };
 
-    // Mirrored counterparts ride in THIS stroke, not their own: they then share
-    // the erase's timestamp and seq, so a single reconcile orders the whole
-    // erase. Committed separately they would sit at seq 0, which
-    // _sortStrokeStack floats to the top of the stack as a permanent hole.
-    const mirrorTargets = this.board.getSelectionMirrorTargets(s, mirrored);
-
-    // Track the dirty region so the erase stroke is properly saved. Must span the
-    // mirrored copies too — commitUserStroke crops the stroke to this rect.
-    const eraseDirty = this.board.unionWithMirrorTargets(
-      { x: ix, y: iy, width: iw, height: ih }, mirrorTargets
-    );
-
     const paintErase = (c) => {
       paintShape(c);
       for (const { region } of mirrorTargets) {
@@ -2204,9 +2274,14 @@ export class RemoteSelectionHandler {
     // a fill that traced the same shape). The two paths must not drift — an
     // erase that removes different pixels here than on the drawer is a desync.
     if (needsHardenedEraseMask(lassoPath, mirrorTargets)) {
-      paintHardenedEraseMask(ctx, eraseDirty, paintErase);
+      paintHardenedEraseMask(ctx, eraseDirty, paintErase, active.origin);
     } else {
+      const ox = active.origin?.x ?? 0;
+      const oy = active.origin?.y ?? 0;
+      if (ox || oy) ctx.save();
+      if (ox || oy) ctx.translate(-ox, -oy);
       paintErase(ctx);
+      if (ox || oy) ctx.restore();
     }
 
     const user = this.getUsersMap().get(userId);
