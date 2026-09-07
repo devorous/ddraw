@@ -252,11 +252,13 @@ export class SyncCoordinator {
     // MM/MU continuation lands on a context that was never clipped, so the
     // joiner paints it outside the mask forever while every peer clips it.
     //
-    // Masks in the tail itself now travel as tool state (StrokeTape), so this
-    // is the floor for masks set before the checkpoint rather than the only
-    // delivery path. Floating selections stay in step 3: those are pixels that
-    // must sit ABOVE all committed content.
-    this._sendActiveMasksToJoiner(ws);
+    // Masks in the tail itself travel as tool state (StrokeTape), so this is
+    // ONLY the floor for masks set before the checkpoint — hence the baseSeq
+    // gate. Sending the current mask unconditionally was the other half of the
+    // bug: a mask armed inside the tail got pre-armed here and then clipped
+    // every earlier stroke the tail replayed. Floating selections stay in
+    // step 3: those are pixels that must sit ABOVE all committed content.
+    this._sendActiveMasksToJoiner(ws, baseSeq);
 
     // 2. Replay the post-checkpoint command tail in seq order. Each commit may
     //    carry a geometry preamble (brush/pen strokes); self-contained commits
@@ -547,9 +549,28 @@ export class SyncCoordinator {
     }
   }
 
-  _sendActiveMasksToJoiner(joinerWs) {
+  /**
+   * Arm the masks that were already in force at the checkpoint.
+   *
+   * ONLY those. A mask armed later travels inside the tail as tool state, at
+   * the position it was actually armed, and pre-arming it here would clip
+   * every stroke the tail replays BEFORE that point — the joiner ends up with
+   * a mask applied retroactively to strokes the drawer never masked (measured:
+   * selparity mask_brush_draw, joiner at 88.5% while live peers agreed at
+   * 99.6%, with all four strokes truncated on the joiner instead of one).
+   *
+   * @param {WebSocket} joinerWs
+   * @param {number} baseSeq - Seq of the checkpoint this joiner is being served.
+   * @private
+   */
+  _sendActiveMasksToJoiner(joinerWs, baseSeq = 0) {
     for (const [sessionIndex, userData] of this.sessionManager.users) {
       if (!userData.activeMask) continue;
+      // Masks recorded before armedAtSeq existed have no stamp; treat those as
+      // pre-checkpoint so their behaviour is the old one rather than silently
+      // dropping the mask entirely.
+      const armedAtSeq = userData.activeMask.armedAtSeq ?? 0;
+      if (armedAtSeq > baseSeq) continue;
       const { sx, sy, sw, sh, ps } = userData.activeMask;
       const msg = { t: T.SEL_MASK, u: sessionIndex, mk: true, sx, sy, sw, sh };
       if (Array.isArray(ps) && ps.length >= 6) {

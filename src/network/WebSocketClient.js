@@ -141,6 +141,15 @@ export class WebSocketClient {
     this._processingScheduled = false;
 
     /**
+     * Whether the currently-scheduled drain was armed on the hidden-tab
+     * (microtask) path. Lets `_scheduleProcessing` notice that visibility
+     * changed under a pending drain and re-arm on the right one.
+     * @private
+     * @type {boolean}
+     */
+    this._processingScheduledHidden = false;
+
+    /**
      * In-flight server history backfill, accumulated between
      * HISTORY_BACKFILL_BEGIN and _END. Null when none is streaming. See
      * {@link WebSocketClient._handleHistoryBackfill}.
@@ -199,7 +208,14 @@ export class WebSocketClient {
     this._trackingActiveStroke = false;
     this._latestStrokeStateMessages = new Map();
 
-    this._boundSendClientStatus = () => this._sendClientStatus();
+    this._boundSendClientStatus = () => {
+      this._sendClientStatus();
+      // Going hidden kills any pending requestAnimationFrame drain, and coming
+      // back makes rAF the better path again. Either way, re-arm the drain for
+      // the visibility we now have — nothing else will if no further message
+      // arrives. See _scheduleProcessing.
+      if (this._messageQueue.length > 0) this._scheduleProcessing();
+    };
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this._boundSendClientStatus);
     }
@@ -743,23 +759,36 @@ export class WebSocketClient {
 
   /**
    * Schedules message queue processing on the next animation frame.
+   *
+   * `_processingScheduled` must be re-armed when the tab's visibility changes
+   * under an already-scheduled drain. Chrome never services a pending
+   * requestAnimationFrame once the tab is backgrounded, so a drain scheduled
+   * while visible dies at that moment — and with the flag latched true, every
+   * later `_scheduleProcessing()` call short-circuited and the hidden-tab
+   * microtask path could never take over. The queue then grew unread for as
+   * long as the tab stayed hidden: measured 160 undrained messages, including
+   * the SYNC_COMPLETE that a joiner needs to release `syncing` (so local input
+   * stayed blocked and nothing the peers drew ever landed).
+   *
    * @private
    * @returns {void}
    */
   _scheduleProcessing() {
-    if (!this._processingScheduled) {
-      this._processingScheduled = true;
-      const isHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
-      if (isHidden) {
-        const defer = typeof queueMicrotask === 'function'
-          ? queueMicrotask
-          : (fn) => Promise.resolve().then(fn);
-        // Hidden tabs heavily throttle timers/rAF; drain promptly to avoid
-        // multi-second remote stroke stalls and segment jumps.
-        defer(() => this._processMessageQueue(true));
-      } else {
-        requestAnimationFrame(() => this._processMessageQueue(false));
-      }
+    const isHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    // Already scheduled on the path that matches the current visibility.
+    if (this._processingScheduled && this._processingScheduledHidden === isHidden) return;
+
+    this._processingScheduled = true;
+    this._processingScheduledHidden = isHidden;
+    if (isHidden) {
+      const defer = typeof queueMicrotask === 'function'
+        ? queueMicrotask
+        : (fn) => Promise.resolve().then(fn);
+      // Hidden tabs heavily throttle timers/rAF; drain promptly to avoid
+      // multi-second remote stroke stalls and segment jumps.
+      defer(() => this._processMessageQueue(true));
+    } else {
+      requestAnimationFrame(() => this._processMessageQueue(false));
     }
   }
 

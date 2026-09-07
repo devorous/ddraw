@@ -340,7 +340,7 @@ async function brushStrokeClearingMaskMidway(page, spec) {
  * what an OBSERVER or a late joiner holds. On those tabs an empty map is itself
  * the finding: the mask never arrived over the wire.
  */
-function probeMaskInkInPage(color, tol, slack, rectOverride) {
+function probeMaskInkInPage(color, tol, slack, rectOverride, limitToMirrorAxis) {
   const app = window.app;
   const lm = app?.board?.layerManager;
   if (!lm) return { error: 'no layerManager' };
@@ -368,6 +368,18 @@ function probeMaskInkInPage(color, tol, slack, rectOverride) {
 
   const d = ctx.getImageData(0, 0, cvs.width, cvs.height).data;
   const edge = Math.round(rect.x + rect.width) + slack;
+  // With a full-board vertical mirror, EVERY masked pixel legitimately has a
+  // reflection right of the axis — that is what assertMaskedStrokeMirrored
+  // demands. Counting those as "leaked past the mask edge" makes the two
+  // assertions contradictory and the scenario unpassable by construction, and
+  // it also swept up the mirrored copies of the pre-existing content strokes
+  // (same probe colour), which is why the reported rightmost ink sat at the
+  // board's far edge rather than anywhere near the mask.
+  //
+  // A leak is ink between the mask edge and the mirror axis: unmasked
+  // territory on the drawn side. Beyond the axis is reflection territory and
+  // belongs to the other assertion.
+  const limitX = limitToMirrorAxis ? Math.floor(cvs.width / 2) : cvs.width;
   let inside = 0, outside = 0, maxX = -1;
   for (let y = 0; y < cvs.height; y++) {
     const row = y * cvs.width * 4;
@@ -377,23 +389,26 @@ function probeMaskInkInPage(color, tol, slack, rectOverride) {
       if (Math.abs(d[i] - color[0]) > tol) continue;
       if (Math.abs(d[i + 1] - color[1]) > tol) continue;
       if (Math.abs(d[i + 2] - color[2]) > tol) continue;
+      if (x <= edge) { inside++; if (x > maxX) maxX = x; continue; }
+      if (x > limitX) continue;   // reflection territory, not a leak
       if (x > maxX) maxX = x;
-      if (x > edge) outside++; else inside++;
+      outside++;
     }
   }
-  return { inside, outside, edge, maxX, rect, source };
+  return { inside, outside, edge, maxX, rect, source, limitX };
 }
 
-async function probeMaskInk(page, color, rect = null) {
-  return page.evaluate(probeMaskInkInPage, color, 40, 3, rect);
+async function probeMaskInk(page, color, rect = null, limitToMirrorAxis = false) {
+  return page.evaluate(probeMaskInkInPage, color, 40, 3, rect, limitToMirrorAxis);
 }
 
 /**
  * Assert the probe stroke was clipped at the mask edge on this tab.
  * @returns {Promise<string[]>} failure lines (empty = pass)
  */
-async function assertMaskClipped(page, label, rect = null, color = MASK_PROBE.color) {
-  const p = await probeMaskInk(page, color, rect);
+async function assertMaskClipped(page, label, rect = null, color = MASK_PROBE.color,
+                                 limitToMirrorAxis = false) {
+  const p = await probeMaskInk(page, color, rect, limitToMirrorAxis);
   if (p.error) return [`[${label}] mask probe: ${p.error}`];
   const fails = [];
   // Guards against a vacuous pass: a stroke that never drew at all is clipped
@@ -651,7 +666,11 @@ async function mirroredSelectionRects(page) {
 async function countInk(page, rect, color, tol = 48) {
   return page.evaluate((rect, color, tol) => {
     const b = window.app.board;
-    const d = b.viewCtx.getImageData(rect.x, rect.y, rect.width, rect.height).data;
+    const d = b.withFullRaster(
+      (canvas) => canvas.getContext('2d').getImageData(rect.x, rect.y, rect.width, rect.height).data,
+      { background: false }
+    );
+    if (!d) return -1;
     let n = 0;
     for (let i = 0; i < d.length; i += 4) {
       if (d[i + 3] < 8) continue;
@@ -664,10 +683,28 @@ async function countInk(page, rect, color, tol = 48) {
 }
 
 /** Counts pixels with any meaningful alpha inside a board-space rect. */
+// Both ink probes read a FRESH FULL-BOARD COMPOSITE, never `board.viewCtx`.
+//
+// viewCanvas is a windowed, viewport-culled surface: Board.js says outright
+// "Call before ANY full-board read of viewCanvas", and once surfaces are
+// windowed `ensureFullComposite()` is a no-op because the surface physically
+// cannot hold the whole board. Reading it with BOARD coordinates therefore
+// sampled whatever the display happened to be holding — stale content outside
+// the viewport, offset by the window origin. That is what made
+// fill_lasso_then_clear report ~115k pixels of leftover alpha over an area the
+// fill never covered, and what made colour probes come back 0 and pass
+// vacuously.
+//
+// `background: false` is required, not cosmetic: with the room background
+// painted, every pixel is opaque and an alpha probe counts the whole rect.
 async function countAnyInk(page, rect, minAlpha = 8) {
   return page.evaluate((rect, minAlpha) => {
     const b = window.app.board;
-    const d = b.viewCtx.getImageData(rect.x, rect.y, rect.width, rect.height).data;
+    const d = b.withFullRaster(
+      (canvas) => canvas.getContext('2d').getImageData(rect.x, rect.y, rect.width, rect.height).data,
+      { background: false }
+    );
+    if (!d) return -1;
     let n = 0;
     for (let i = 3; i < d.length; i += 4) if (d[i] >= minAlpha) n++;
     return n;
@@ -1253,7 +1290,9 @@ const SCENARIOS = [
     // on a mask that ate every reflection.
     async assert(page, label, ctx) {
       return [
-        ...(await assertMaskClipped(page, label)),
+        // Mirror on: bound the leak window at the mirror axis, or this assert
+        // and the one below contradict each other. See probeMaskInkInPage.
+        ...(await assertMaskClipped(page, label, null, MASK_PROBE.color, true)),
         ...(await assertMaskedStrokeMirrored(page, label, ctx)),
       ];
     },

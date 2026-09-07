@@ -195,9 +195,17 @@ export class FloodFillTool {
    * Render a mask to a target canvas context, optionally blurring edges.
    * Runs on main thread (needs canvas context).
    */
-  _renderMask(ctx, result, fillR, fillG, fillB, userOpacity, blurRadius, width, height, user = null) {
+  _renderMask(ctx, result, fillR, fillG, fillB, userOpacity, blurRadius, width, height, user = null, origin = null) {
     if (!result) return;
     const { mask, minX, minY, maxX, maxY } = result;
+
+    // `ctx` may be a windowed active-stroke canvas whose local (0,0) sits at
+    // board position `origin`. putImageData IGNORES the ctx transform, so the
+    // `ctx.translate(-origin.x, -origin.y)` convention the rest of the
+    // active-stroke windowing campaign uses cannot be applied here — the
+    // offset has to be subtracted at each paint site instead.
+    const ox = origin?.x ?? 0;
+    const oy = origin?.y ?? 0;
 
     // If pattern mode is enabled and user has a pattern brush, use pattern fill.
     // Local fill mode is owned by the fill tool; remote/replay fill mode arrives
@@ -205,7 +213,7 @@ export class FloodFillTool {
     const isLocalUser = user === this.board.app?.self;
     const usePatternFill = user?.patternBrush && (isLocalUser ? this.patternMode : user.patternMode);
     if (user && usePatternFill) {
-      return this._renderMaskPattern(ctx, result, userOpacity, blurRadius, width, height, user);
+      return this._renderMaskPattern(ctx, result, userOpacity, blurRadius, width, height, user, origin);
     }
 
     const a = Math.round(userOpacity * 255);
@@ -226,7 +234,7 @@ export class FloodFillTool {
           }
         }
       }
-      ctx.putImageData(imgData, minX, minY);
+      ctx.putImageData(imgData, minX - ox, minY - oy);
       return;
     }
 
@@ -264,7 +272,7 @@ export class FloodFillTool {
           pd[i] = pd[i + 1] = pd[i + 2] = 0;
         }
       }
-      ctx.putImageData(padded, padMinX, padMinY);
+      ctx.putImageData(padded, padMinX - ox, padMinY - oy);
     } else {
       // CSS fallback: Do NOT manually premultiply - canvas handles it internally
       // Manual premultiplication + putImageData causes double premultiplication
@@ -275,7 +283,7 @@ export class FloodFillTool {
 
       ctx.save();
       ctx.filter = `blur(${blurRadius}px)`;
-      ctx.drawImage(tmp, padMinX, padMinY);
+      ctx.drawImage(tmp, padMinX - ox, padMinY - oy);
       ctx.restore();
     }
   }
@@ -285,14 +293,14 @@ export class FloodFillTool {
    * Works like pattern brush: black fill acts as mask over pattern.
    * @private
    */
-  _renderMaskPattern(ctx, result, userOpacity, blurRadius, width, height, user) {
+  _renderMaskPattern(ctx, result, userOpacity, blurRadius, width, height, user, origin = null) {
     const { mask, minX, minY, maxX, maxY } = result;
 
     const tile = this._getPatternTile(user);
     if (!tile) {
       // Fallback to solid color if no pattern
       const [r, g, b] = user.color;
-      return this._renderMask(ctx, result, r, g, b, userOpacity, blurRadius, width, height, null);
+      return this._renderMask(ctx, result, r, g, b, userOpacity, blurRadius, width, height, null, origin);
     }
 
     const scale = getPatternDrawScale(user, tile);
@@ -363,15 +371,46 @@ export class FloodFillTool {
     tmpCtx.fillRect(0, 0, padW, padH);
 
     // Step 3: Draw result to target context
-    ctx.drawImage(tmpCanvas, padMinX, padMinY);
+    ctx.drawImage(tmpCanvas, padMinX - (origin?.x ?? 0), padMinY - (origin?.y ?? 0));
   }
 
-  _renderMaskComposite(targetCtx, result, fillR, fillG, fillB, userOpacity, blurRadius, width, height, user = null) {
+  /**
+   * The board-absolute box a rendered mask can actually paint into: its own
+   * bounding box grown by the blur's reach — the same `br * 3` padding
+   * `_renderMask`/`_renderMaskPattern` compute internally — clamped to the board.
+   * @private
+   */
+  _paddedMaskRect(result, blurRadius, width, height) {
+    const br = blurRadius > 0 ? Math.ceil(blurRadius) : 0;
+    const x = Math.max(0, result.minX - br * 3);
+    const y = Math.max(0, result.minY - br * 3);
+    const right = Math.min(width - 1, result.maxX + br * 3);
+    const bottom = Math.min(height - 1, result.maxY + br * 3);
+    return { x, y, width: right - x + 1, height: bottom - y + 1 };
+  }
+
+  /**
+   * Render a mask through a temp canvas so it composites onto `targetCtx` as a
+   * single unit — the mirror copies need this so their alpha does not stack
+   * against the primary fill where they overlap.
+   *
+   * The temp is sized to the mask's own padded bounds, not the full board.
+   *
+   * Only `drawImage` touches `targetCtx` here, and that DOES go through the
+   * CTM, so a windowed target may either pass `origin` or pre-translate —
+   * but not both.
+   *
+   * @param {{x:number,y:number}|null} [origin] - Board position of a windowed
+   *   target canvas's local (0,0).
+   */
+  _renderMaskComposite(targetCtx, result, fillR, fillG, fillB, userOpacity, blurRadius, width, height, user = null, origin = null) {
+    if (!result) return;
+    const rect = this._paddedMaskRect(result, blurRadius, width, height);
     const tmp = document.createElement('canvas');
-    tmp.width = width;
-    tmp.height = height;
-    this._renderMask(tmp.getContext('2d'), result, fillR, fillG, fillB, userOpacity, blurRadius, width, height, user);
-    targetCtx.drawImage(tmp, 0, 0);
+    tmp.width = rect.width;
+    tmp.height = rect.height;
+    this._renderMask(tmp.getContext('2d'), result, fillR, fillG, fillB, userOpacity, blurRadius, width, height, user, rect);
+    targetCtx.drawImage(tmp, rect.x - (origin?.x ?? 0), rect.y - (origin?.y ?? 0));
   }
 
   _broadcastFill(user, x, y, layerIndex, expansion, blurRadius) {
@@ -410,17 +449,29 @@ export class FloodFillTool {
     this.board.requestUpdate?.();
   }
 
-  _countFilledPixels(result) {
+  /**
+   * The mask is a full-board Uint8Array, but everything set in it lies inside
+   * the bounding box the worker already reported, so only that box is scanned.
+   * This runs once per fill and again on every interactive preview frame.
+   * @private
+   */
+  _countFilledPixels(result, width) {
     if (!result?.mask) return 0;
+    const stride = result.width ?? width;
+    if (!stride) return 0;
+    const { mask, minX, minY, maxX, maxY } = result;
     let filledPixels = 0;
-    for (let i = 0; i < result.mask.length; i++) {
-      if (result.mask[i]) filledPixels++;
+    for (let py = minY; py <= maxY; py++) {
+      const row = py * stride;
+      for (let px = minX; px <= maxX; px++) {
+        if (mask[row + px]) filledPixels++;
+      }
     }
     return filledPixels;
   }
 
   _isFillTooLarge(result, width, height) {
-    const filledPixels = this._countFilledPixels(result);
+    const filledPixels = this._countFilledPixels(result, width);
     const maxPixels = Math.round(width * height * 0.4);
     return filledPixels > maxPixels
       ? { filledPixels, maxPixels }
@@ -438,17 +489,74 @@ export class FloodFillTool {
   }
 
   /**
+   * Board-absolute box covering everything a fill will paint: the primary mask
+   * unioned with every mirror copy, grown by the blur reach and expansion.
+   * Sizes the windowed active-stroke canvas. Returns null when there is nothing
+   * to bound, which callers pass through as "full board".
+   * @private
+   */
+  _fillStrokeBounds(result, mirrors, blurRadius, expansion, width, height) {
+    const pad = Math.ceil(blurRadius * 3) + Math.ceil(Math.abs(expansion));
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const entry of [result, ...mirrors]) {
+      const r = entry?.result || entry;
+      if (!r || r.maxX == null) continue;
+      if (r.minX < minX) minX = r.minX;
+      if (r.minY < minY) minY = r.minY;
+      if (r.maxX > maxX) maxX = r.maxX;
+      if (r.maxY > maxY) maxY = r.maxY;
+    }
+    if (maxX < minX) return null;
+    const x = Math.max(0, minX - pad);
+    const y = Math.max(0, minY - pad);
+    const right = Math.min(width, maxX + pad + 1);
+    const bottom = Math.min(height, maxY + pad + 1);
+    return { x, y, width: right - x, height: bottom - y };
+  }
+
+  /**
+   * Begin this user's active stroke windowed to `bounds` rather than through
+   * `Board.beginStroke` — that shared wrapper calls `beginUserStroke` with no
+   * bounds, which allocates a full-board canvas AND pins `origin` to null for
+   * the stroke's whole lifetime, so a later windowed `getUserStrokeContext`
+   * would be silently ignored. Same trap already worked around in
+   * EraserTool/BlurTool/GlitchBlurTool/ConfettiTool/ImageBrushTool/ShapeTools.
+   * Replicates `beginStroke`'s other effects (mask clip, requestUpdate).
+   * @private
+   */
+  _beginStrokeWindowed(user, params, bounds) {
+    if (user?.panning) return null;
+    const lm = this.board.layerManager;
+    if (!lm) return null;
+    lm.beginUserStroke(
+      params.activeLayer,
+      params.userId,
+      user?.blendMode ?? 'source-over',
+      user?.blendBakeMode,
+      bounds
+    );
+    this.board.applySelectionMaskClipForStroke(params.activeLayer, params.userId);
+    this.board.requestUpdate();
+    return lm.getActiveStroke(params.activeLayer, params.userId)?.origin ?? null;
+  }
+
+  /**
    * Commit a fill result to the stroke canvas.
    * @private
    */
   _commitFillResult(user, result, params, width, height, mirrorResults, blurRadius = this._blurRadius, expansion = this._expansion) {
     if (!result) return;
 
-    this.board.beginStroke(user);
+    const mirrors = Array.isArray(mirrorResults) ? mirrorResults : (mirrorResults ? [mirrorResults] : []);
+
+    // A fill only ever paints inside its own mask, so the active-stroke canvas
+    // is windowed to that instead of the whole board.
+    const bounds = this._fillStrokeBounds(result, mirrors, blurRadius, expansion, width, height);
+    const origin = this._beginStrokeWindowed(user, params, bounds);
     const strokeCtx = this.board.layerManager.getUserStrokeContext(params.activeLayer, params.userId);
     if (!strokeCtx) return;
 
-    this._renderMask(strokeCtx, result, params.fillR, params.fillG, params.fillB, params.userOpacity, blurRadius, width, height, user);
+    this._renderMask(strokeCtx, result, params.fillR, params.fillG, params.fillB, params.userOpacity, blurRadius, width, height, user, origin);
 
     const pad = Math.ceil(blurRadius * 3) + Math.ceil(Math.abs(expansion));
     const bx = Math.max(0, result.minX - pad);
@@ -457,17 +565,23 @@ export class FloodFillTool {
     const bh = Math.min(height, result.maxY + pad + 1) - by;
     this.board.expandDirtyRect(user, bx, by, bw, bh);
 
-    const mirrors = Array.isArray(mirrorResults) ? mirrorResults : (mirrorResults ? [mirrorResults] : []);
     for (const entry of mirrors) {
       const mirrorResult = entry?.result || entry;
       const region = entry?.region || null;
       if (!mirrorResult) continue;
       if (region) {
+        // withMirrorRegionClip builds its clip rect in BOARD coordinates, so a
+        // windowed strokeCtx has to be translated here rather than handed
+        // `origin` — clip paths go through the CTM, and so does the drawImage
+        // _renderMaskComposite finishes with. Passing both would double-shift.
+        strokeCtx.save();
+        strokeCtx.translate(-(origin?.x ?? 0), -(origin?.y ?? 0));
         this.board.withMirrorRegionClip(strokeCtx, region, () => {
           this._renderMaskComposite(strokeCtx, mirrorResult, params.fillR, params.fillG, params.fillB, params.userOpacity, blurRadius, width, height, user);
         });
+        strokeCtx.restore();
       } else {
-        this._renderMaskComposite(strokeCtx, mirrorResult, params.fillR, params.fillG, params.fillB, params.userOpacity, blurRadius, width, height, user);
+        this._renderMaskComposite(strokeCtx, mirrorResult, params.fillR, params.fillG, params.fillB, params.userOpacity, blurRadius, width, height, user, origin);
       }
       const mpad = Math.ceil(blurRadius * 3) + Math.ceil(Math.abs(expansion));
       const mbx = Math.max(0, mirrorResult.minX - mpad);
@@ -570,7 +684,10 @@ export class FloodFillTool {
     this._clickPos = { x, y };
     this._dragStartExpansion = this._expansion;
     this._dragStartBlur = this._blurRadius;
-    this._imageData = this.board.getFullBoardImageData(0, 0, width, height);
+    // Reuse the readback taken above rather than taking a second one:
+    // computeFill copies the buffer it is handed (see FillWorkerClient), so
+    // `imageData` is never detached and stays valid for the whole drag.
+    this._imageData = imageData;
 
     this._fillParams = { ...params, width, height, user };
 
@@ -633,7 +750,7 @@ export class FloodFillTool {
     const { x, y } = this._clickPos;
 
     const result = await this._fillWorker.computeFill(
-      this._imageData.data.slice(0), width, height,
+      this._imageData.data, width, height,
       x, y, 10, this._expansion, null
     );
 
@@ -655,7 +772,7 @@ export class FloodFillTool {
       this._renderMask(topCtx, result, fillR, fillG, fillB, userOpacity, this._blurRadius, width, height, user);
 
       const mirrorResults = await this._computeMirrorFillResults(
-        this._imageData.data.slice(0),
+        this._imageData.data,
         width,
         height,
         x,
@@ -719,7 +836,7 @@ export class FloodFillTool {
     this._pendingPreview = false;
 
     const result = await this._fillWorker.computeFill(
-      this._imageData.data.slice(0), width, height,
+      this._imageData.data, width, height,
       x, y, 10, this._expansion, null
     );
 
@@ -739,7 +856,7 @@ export class FloodFillTool {
       }
 
       const mirrorResults = await this._computeMirrorFillResults(
-        this._imageData.data.slice(0),
+        this._imageData.data,
         width,
         height,
         x,

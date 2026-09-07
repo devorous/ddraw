@@ -790,7 +790,6 @@ export async function sanitizeMessage(data) {
       sanitized.clearedTiles = sanitizeUintArray(data.clearedTiles, { max: 1_000_000, maxLength: MAX_TILE_LIST });
       return sanitized.clearedTiles.length ? sanitized : null;
 
-    case T.SYNC_CANVAS:
     case T.SYNC_LAYER_BASE:
     case T.SYNC_STROKE: {
       sanitized.tu = clampInt(data.tu, 0, 65535, 0);

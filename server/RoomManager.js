@@ -118,8 +118,6 @@ export class Room {
     });
     this.syncCoordinator = new SyncCoordinator(this.sessionManager, { clients: this.clients }, this.sendTo, this);
 
-    this.POOLED_MSG = this.Msg.create();
-
     /** @type {Set<number>} Set of occupied tile indices */
     this.tileDirtySet = new Set();
     this.settings.floatingGalleryVoronoi = generateFloatingGalleryVoronoi(this.settings.floatingGallerySeed);

@@ -463,10 +463,36 @@ export function joinVerdict(result, { requiredTypes = JOIN_REQUIRED_TYPES } = {}
     const extraFps = new Set();
     for (const op of ops) if (op.op === 'extra') extraFps.add(op.event.fp);
 
-    for (const op of ops) {
+    // A SEL_LIFT retired by a SEL_CANCEL is legitimately absent, not lost.
+    // `StrokeTape.observe` discards the whole pending selection preamble on
+    // SEL_CANCEL (`this._pendingSelection.delete(uid)`) — the same way T.CANCEL
+    // discards a cancelled stroke's `_pending` — because lift→move→cancel is a
+    // no-op and replaying it to a joiner would be strictly wrong. So the joiner
+    // holds neither the lift nor the cancel, and that is the correct tail.
+    //
+    // Only a lift whose gesture actually COMMITTED is required. Anything else
+    // would either blind this check to real lift loss (by dropping SEL_LIFT
+    // from requiredTypes outright) or fail every cancel scenario.
+    const cancelledLiftIdx = new Set();
+    let openLiftIdx = -1;
+    for (let i = 0; i < ops.length; i++) {
+      const name = ops[i].event?.typeName;
+      if (name === 'SEL_LIFT') openLiftIdx = i;
+      else if (name === 'SEL_CANCEL') {
+        if (openLiftIdx >= 0) cancelledLiftIdx.add(openLiftIdx);
+        openLiftIdx = -1;
+      } else if (requiredTypes.has(name) && name !== 'SEL_LIFT') {
+        // A commit closed the gesture — its lift stands on its own.
+        openLiftIdx = -1;
+      }
+    }
+
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
       if (op.op !== 'missing') continue;
       const entry = { user: stream.user, event: op.event };
       if (extraFps.has(op.event.fp)) reordered.push(entry);
+      else if (cancelledLiftIdx.has(i)) compacted.push(entry);
       else if (requiredTypes.has(op.event.typeName)) dropped.push(entry);
       else compacted.push(entry);
     }

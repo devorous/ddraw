@@ -646,12 +646,19 @@ export function setupDrawingHandlers(wrapHandler, app) {
     }
 
     const blendMode = user.blendMode || 'source-over';
-    board.layerManager.beginUserStroke(layerIndex, userId, blendMode, user.blendBakeMode);
+    // Window the active-stroke canvas to the mask instead of the whole board.
+    // Only the primary fill's bounds are known here — the mirror copies below
+    // are computed one at a time, against a raster that already includes
+    // whatever was painted before them, so they cannot be hoisted without
+    // changing what they flood. Each one grows the window instead.
+    const bounds = fillTool._fillStrokeBounds(result, [], blurRadius, expansion, width, height);
+    board.layerManager.beginUserStroke(layerIndex, userId, blendMode, user.blendBakeMode, bounds);
     board.applySelectionMaskClipForStroke(layerIndex, userId);
-    const strokeCtx = board.layerManager.getUserStrokeContext(layerIndex, userId);
+    let strokeCtx = board.layerManager.getUserStrokeContext(layerIndex, userId);
     if (!strokeCtx) return;
+    let origin = board.layerManager.getActiveStroke(layerIndex, userId)?.origin ?? null;
 
-    fillTool._renderMask(strokeCtx, result, fillR, fillG, fillB, userOpacity, blurRadius, width, height, user);
+    fillTool._renderMask(strokeCtx, result, fillR, fillG, fillB, userOpacity, blurRadius, width, height, user, origin);
 
     const pad = Math.ceil(blurRadius * 3) + Math.ceil(Math.abs(expansion));
     const bx = Math.max(0, result.minX - pad);
@@ -676,9 +683,19 @@ export function setupDrawingHandlers(wrapHandler, app) {
           fillTool._warnFillTooLarge?.(mirrorFillLimit, false);
           continue;
         }
+        // Growing reallocates the canvas (blitting the existing paint forward),
+        // so both the ctx and the origin have to be re-read afterwards.
+        const mBounds = fillTool._fillStrokeBounds(mResult, [], blurRadius, expansion, width, height);
+        strokeCtx = board.layerManager.getUserStrokeContext(layerIndex, userId, undefined, undefined, mBounds) || strokeCtx;
+        origin = board.layerManager.getActiveStroke(layerIndex, userId)?.origin ?? null;
+        // withMirrorRegionClip builds its clip rect in BOARD coordinates, so a
+        // windowed ctx is translated here rather than handed `origin`.
+        strokeCtx.save();
+        strokeCtx.translate(-(origin?.x ?? 0), -(origin?.y ?? 0));
         board.withMirrorRegionClip(strokeCtx, region, () => {
           fillTool._renderMaskComposite(strokeCtx, mResult, fillR, fillG, fillB, userOpacity, blurRadius, width, height, user);
         });
+        strokeCtx.restore();
         const mbx = Math.max(0, mResult.minX - pad);
         const mby = Math.max(0, mResult.minY - pad);
         const mbw = Math.min(width, mResult.maxX + pad + 1) - mbx;

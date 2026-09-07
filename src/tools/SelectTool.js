@@ -4514,16 +4514,40 @@ export class SelectTool extends Tool {
     const hasLiftToUndo = !!this._restoreData;
 
     const app = this.board.app;
-    const didDelete = this.deleteSelection();
-    if (!didDelete) return false;
 
-    if (hasLiftToUndo) {
-      if (typeof app?.handleUndo === 'function') {
-        app.handleUndo();
-      } else {
-        this.board.undo(app?.self?.activeLayer ?? 0, app?.self?.id ?? 0);
-      }
+    // Nothing was lifted (clone/paste): no pixels were erased, so there is
+    // nothing for a peer to put back and the ordinary delete path is exactly
+    // right. SEL_CANCEL would be actively wrong here — with no restore data
+    // the receiver's cancel handler falls through to redrawing the float at
+    // its origin, stamping the very paste the user just cancelled.
+    if (!hasLiftToUndo) return this.deleteSelection();
+
+    // A lifted float. SEL_DELETE cannot express this cancel: its receiver-side
+    // floating branch RELABELS our lift-erase stroke to the SEL_DELETE seq
+    // (RemoteSelectionHandler._setSelectionEraseStrokeSeq), and the UNDO we
+    // used to send straight after names the seq the stroke had BEFORE that
+    // relabel. The named target then matches nothing, the seq-0-only fallback
+    // declines to guess, and every peer keeps the hole forever while we
+    // restore locally — measured at 88.4% A<->B/C/D on selparity move_cancel.
+    //
+    // SEL_CANCEL is the verb that already means "put the lifted pixels back",
+    // and its handler removes the erase stroke by identity rather than by seq,
+    // so it cannot be desynchronised the same way. It also needs no follow-up
+    // UNDO — sending one too would double-instruct the peers.
+    this.floatingCanvas = null;
+    this.floatingCtx = null;
+    this._sourceCropForRemote = null;
+    this._restoreData = null;
+
+    if (app?.wsClient) {
+      app.inputBufferManager.queueBroadcast(() => app.wsClient.broadcastSelectionCancel());
     }
+
+    this.hideContextMenu();
+    this.clearSelection();
+
+    // Local rollback only. The peers are already handling SEL_CANCEL above.
+    this.board.undo(app?.self?.activeLayer ?? 0, app?.self?.id ?? 0);
 
     return true;
   }

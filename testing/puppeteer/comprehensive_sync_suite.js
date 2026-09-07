@@ -667,6 +667,22 @@ async function drawPath(page, points) {
     app.inputBufferManager?.tick();
   }, clientPoints);
   await sleep(250);
+  await flushBroadcasts(page);
+}
+
+/**
+ * One more buffer flush after the tool has had time to finish.
+ *
+ * The real tick loop is stopped (see stopTickLoop) and every tick here is
+ * manual, so a broadcast queued *after* the tick that follows pointerup is
+ * simply never sent. Async tools do exactly that: the flood fill's FILL frame
+ * lands ~300ms after the click, and in `fill_variations` the fifth and final
+ * fill was therefore never broadcast at all — the drawer held 10 strokes to
+ * every peer's 9. In production the 60 TPS loop flushes it a frame later and
+ * nothing is lost.
+ */
+async function flushBroadcasts(page) {
+  await page.evaluate(() => window.app.inputBufferManager?.tick());
 }
 
 async function clickPoint(page, x, y) {
@@ -680,6 +696,7 @@ async function clickPoint(page, x, y) {
     app.inputBufferManager?.tick();
   }, c);
   await sleep(250);
+  await flushBroadcasts(page);
 }
 
 async function drag(page, sx, sy, ex, ey) {
@@ -816,17 +833,27 @@ async function captureLayerCompositePng(page) {
     cvs.width = lm.width;
     cvs.height = lm.height;
     const ctx = cvs.getContext('2d');
-    for (let gi = 0; gi < lm.layerGroups.length; gi++) {
-      const group = lm.layerGroups[gi];
-      if (group.flatCanvas) ctx.drawImage(group.flatCanvas, 0, 0);
-      const sorted = [...group.strokeStack].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-      for (const s of sorted) {
-        if (!s.canvas) continue;
-        ctx.globalCompositeOperation = s.blendMode || 'source-over';
-        ctx.drawImage(s.canvas, s.x || 0, s.y || 0);
-      }
-      ctx.globalCompositeOperation = 'source-over';
-    }
+
+    // Delegate to the product compositor rather than re-implementing it, for
+    // the same reason layerDiff.mjs does: compositeLayerRange dispatches
+    // between four group paths (flatCanvas / isolated / sequential / plain)
+    // and a hand-rolled loop cannot track that.
+    //
+    // It was not merely inexact, it threw: `group.flatCanvas` is not always an
+    // HTMLCanvasElement (a tiled backing store hands back a tile-backed object),
+    // so `drawImage(group.flatCanvas, 0, 0)` died with "The provided value is
+    // not of type '(CSSImageValue or HTMLCanvasElement or ...)'" and, because
+    // this runs from saveBotArtifacts on the FAILURE path, it aborted the whole
+    // suite mid-run instead of saving the artifact for the one failing case.
+    //
+    // needsComposite is restored because the call clears it as a side effect,
+    // and suppressing a pending composite on a live board would be a real side
+    // effect of measuring it.
+    const prevNeedsComposite = lm.needsComposite;
+    lm.compositeLayerRange(ctx, 0, lm.layerGroups.length, null, null);
+    lm.needsComposite = prevNeedsComposite;
+    ctx.globalCompositeOperation = 'source-over';
+
     return cvs.toDataURL('image/png');
   });
   if (!dataUrl) return null;
@@ -840,6 +867,10 @@ async function userStateDump(page) {
       n: u.username, t: u.tool, sz: u.size, hd: u.hardness,
       op: u.opacity, sp: u.spacing, sm: u.smoothing,
       col: u.color, bm: u.blendMode,
+      // afk gates delivery server-side: every tool-state and stroke type is in
+      // INACTIVE_FILTERED_TYPES, so an AFK RECIPIENT is skipped in
+      // broadcastToRoom and silently stops tracking its peers.
+      afk: u.afk ?? null,
     });
     return {
       self: dump(app.self),

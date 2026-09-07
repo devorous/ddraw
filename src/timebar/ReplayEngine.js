@@ -2183,9 +2183,14 @@ export class ReplayEngine {
     }
 
     const blendMode = user.blendMode || 'source-over';
-    board.layerManager.beginUserStroke(layerIndex, userId, blendMode);
-    const strokeCtx = board.layerManager.getUserStrokeContext(layerIndex, userId);
+    // Window the active-stroke canvas to the mask instead of the whole board,
+    // matching the live path. Only the primary fill's bounds are known here;
+    // each mirror copy below grows the window (see DrawingHandlers).
+    const bounds = fillTool._fillStrokeBounds(result, [], blurRadius, expansion, width, height);
+    board.layerManager.beginUserStroke(layerIndex, userId, blendMode, undefined, bounds);
+    let strokeCtx = board.layerManager.getUserStrokeContext(layerIndex, userId);
     if (!strokeCtx) return;
+    let origin = board.layerManager.getActiveStroke(layerIndex, userId)?.origin ?? null;
 
     fillTool._renderMask(
       strokeCtx,
@@ -2197,7 +2202,8 @@ export class ReplayEngine {
       blurRadius,
       width,
       height,
-      user
+      user,
+      origin
     );
 
     const pad = Math.ceil(blurRadius * 3) + Math.ceil(Math.abs(expansion));
@@ -2231,6 +2237,15 @@ export class ReplayEngine {
       }
 
       if (!mirrorResult) continue;
+      // Growing reallocates the canvas (blitting existing paint forward), so
+      // both the ctx and the origin have to be re-read afterwards.
+      const mBounds = fillTool._fillStrokeBounds(mirrorResult, [], blurRadius, expansion, width, height);
+      strokeCtx = board.layerManager.getUserStrokeContext(layerIndex, userId, undefined, undefined, mBounds) || strokeCtx;
+      origin = board.layerManager.getActiveStroke(layerIndex, userId)?.origin ?? null;
+      // withMirrorRegionClip builds its clip rect in BOARD coordinates, so a
+      // windowed ctx is translated here rather than handed `origin`.
+      strokeCtx.save();
+      strokeCtx.translate(-(origin?.x ?? 0), -(origin?.y ?? 0));
       board.withMirrorRegionClip(strokeCtx, region, () => {
         fillTool._renderMaskComposite(
           strokeCtx,
@@ -2245,6 +2260,7 @@ export class ReplayEngine {
           user
         );
       });
+      strokeCtx.restore();
       const mbx = Math.max(0, mirrorResult.minX - pad);
       const mby = Math.max(0, mirrorResult.minY - pad);
       const mbw = Math.min(width, mirrorResult.maxX + pad + 1) - mbx;

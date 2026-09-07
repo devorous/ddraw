@@ -5,6 +5,15 @@ syntax = "proto3";
 message Msg {
   // Combined command + broadcast type enum
   enum T {
+    // Retired types. Never reuse these numbers — an old client still has them
+    // in its schema and would decode a new message under the old meaning.
+    //   42  SYNC_PROVIDE                 legacy provider-election sync relay,
+    //   43  SYNC_CANVAS                  replaced by SyncCoordinator
+    //  104  BOARD_SNAPSHOT_JOIN_NOTIFY   opt-in join toast, replaced by auto-restore
+    //  133  METRICS_UPDATE               never sent; MetricsTracker uses HTTP
+    //  140  SYNC_PARITY_MANIFEST         manifest rides on SYNC_PARITY_MISMATCH
+    reserved 42, 43, 104, 133, 140;
+
     // Commands (0-9)
     CONNECT = 0;
     USERS = 1;          // Current users list
@@ -47,8 +56,6 @@ message Msg {
 
     // Sync types (41+)
     SYNC_REQUEST = 41;      // New user requests canvas state
-    SYNC_PROVIDE = 42;      // Server asks existing user to provide canvas
-    SYNC_CANVAS = 43;       // (legacy) Canvas data (PNG) being sent
     SYNC_COMPLETE = 44;     // Sync complete
     SYNC_LAYER_BASE = 46;   // One per layer: baked base canvas PNG
     SYNC_STROKE = 47;       // One per stroke record (stack or redo)
@@ -111,7 +118,6 @@ message Msg {
     BOARD_SNAPSHOT_REQUEST = 101; // Server asks a client to capture a snapshot
     BOARD_SNAPSHOT_GET = 102;     // Client privately fetches one snapshot's layer data
     BOARD_SNAPSHOT_REGION_RESTORE = 103; // Restore a region from a snapshot (broadcast)
-    BOARD_SNAPSHOT_JOIN_NOTIFY = 104; // Server notifies a newly joined user about the latest snapshot
     CHECKPOINT_UPLOAD = 110;       // Dedicated user uploads full board checkpoint
     CHECKPOINT_LIST = 111;         // Request list of checkpoints for replay
     CHECKPOINT_LIST_RESPONSE = 112; // Response with checkpoint metadata
@@ -125,14 +131,12 @@ message Msg {
     BW_PROBE_START = 130;          // Server→client: start a bandwidth probe (returns N chunks)
     BW_PROBE_CHUNK = 131;          // Client→server: one probe chunk (random bytes)
     BW_REPORT = 132;               // Client→server: report a previously measured uploadBps (e.g. from _discovery)
-    METRICS_UPDATE = 133;          // Client→server: batched metrics update (achievements)
     IMAGE_TOOL = 134;              // Image data for image-based tools (image/pattern/confetti)
     CONNECT_RESUMED = 135;         // Server→client: same-session reattach after a brief disconnect
     SEL_MERGE = 136;               // Merge selection contents between layers (up/down/all)
     SYNC_PARITY_CHECK = 137;       // Client→server: heartbeat (seq, count, rollingHash)
     SYNC_PARITY_OK = 138;          // Server→client: client matches server log
     SYNC_PARITY_MISMATCH = 139;    // Server→client: counts/hashes diverged
-    SYNC_PARITY_MANIFEST = 140;    // Server→client: chunked Merkle-style summary
     SYNC_PARITY_CHUNK_REQUEST = 141; // Client→server: request entries for a chunk index
     SYNC_PARITY_CHUNK = 142;       // Server→client: full fingerprint entries for a chunk
     SYNC_PARITY_RESYNC_REQUEST = 143; // Client→server: replay these missing seqs
@@ -267,7 +271,7 @@ message Msg {
 
   // === Sync Fields ===
   bytes img = 24;            // PNG image data (full canvas or stroke/base canvas)
-  uint32 tu = 25;            // Target user for sync messages (optional in SYNC_REQUEST to request from specific provider, required in SYNC_PROVIDE to indicate who needs sync)
+  uint32 tu = 25;            // Target user for sync/active-stroke replay messages
 
   // === Stroke Sync Fields ===
   uint64 stroke_ts = 46;       // Stroke timestamp (Date.now()) for undo grouping
@@ -303,7 +307,6 @@ message Msg {
   uint32 mod_target       = 35;  // Target session index
   string mod_reason       = 36;  // Reason for action
   uint32 mod_duration     = 37;  // Duration in minutes (0=permanent)
-  string mod_ip           = 38;  // Obfuscated IP for mod panel
   string mod_target_name  = 39;  // Target username
   string mod_issuer_name  = 40;  // Issuer username
   bool   mod_show_history = 53;  // MOD_LIST: return all entries (not just active)
@@ -498,12 +501,11 @@ message Msg {
   bytes  probe_data    = 139;  // BW_PROBE_CHUNK: random payload bytes
   uint32 upload_bps    = 140;  // BW_REPORT: measured bytes-per-second (rounded)
 
-  // === Metrics Tracking Fields (141+) ===
-  uint64 metrics_distance = 141;    // METRICS_UPDATE: distance drawn in pixels
-  uint32 metrics_strokes = 142;     // METRICS_UPDATE: stroke count
-  uint64 metrics_time_ms = 143;     // METRICS_UPDATE: time spent in milliseconds
-  uint32 metrics_chat = 144;        // METRICS_UPDATE: chat messages sent
-  repeated string metrics_tools = 145; // METRICS_UPDATE: tools used during this batch
+  // === Retired fields ===
+  // 38        mod_ip           — obfuscated IP for the mod panel; mod_entries.ip carries it now
+  // 141..145  metrics_*        — METRICS_UPDATE payload; MetricsTracker posts over HTTP instead
+  reserved 38, 141, 142, 143, 144, 145;
+
 
   // === Instance ID (per-connection unique identifier) ===
   string iid = 153;                 // Instance ID: random per-connection token to detect index reuse

@@ -1474,7 +1474,6 @@ wss.on('error', (err) => {
 });
 
 let Msg;
-let POOLED_MSG;
 let roomManager;
 let onlineUsersLogInterval;
 let isShuttingDown = false;
@@ -1721,14 +1720,30 @@ function getTargetProtectionRole(targetWs, targetUser) {
 
 function sendActiveOverlaysToClient(ws, room) {
   if (!ws || !room) return;
-  for (const [sessionIndex, userData] of room.sessionManager.users) {
-    if (!userData.activeMask) continue;
-    const { sx, sy, sw, sh, ps } = userData.activeMask;
-    const msg = { t: T.SEL_MASK, u: sessionIndex, mk: true, sx, sy, sw, sh };
-    if (Array.isArray(ps) && ps.length >= 6) {
-      msg.ps = ps;
+
+  // Selection masks are NOT sent here when a join sync is coming. A mask clips
+  // at MD time, so arming one before the tail replays makes it clip every
+  // stroke in that tail — including the ones drawn before the mask existed.
+  // SyncCoordinator._sendActiveMasksToJoiner owns mask delivery for a syncing
+  // client: it arms only the masks that predate the checkpoint, and the tail
+  // itself carries the rest as tool state, each at the position it was armed.
+  //
+  // The flag is set just above room.addClient() and only when the room already
+  // has peers — which is also the only way an active mask can exist — so the
+  // fallback below stays correct for a lone first joiner (no sync, no peers,
+  // nothing to arm).
+  const joinSyncWillDeliverMasks = !!ws.joinSyncPendingSince;
+
+  if (!joinSyncWillDeliverMasks) {
+    for (const [sessionIndex, userData] of room.sessionManager.users) {
+      if (!userData.activeMask) continue;
+      const { sx, sy, sw, sh, ps } = userData.activeMask;
+      const msg = { t: T.SEL_MASK, u: sessionIndex, mk: true, sx, sy, sw, sh };
+      if (Array.isArray(ps) && ps.length >= 6) {
+        msg.ps = ps;
+      }
+      sendTo(ws, msg);
     }
-    sendTo(ws, msg);
   }
   for (const region of room.obscureRegions?.values?.() || []) {
     sendTo(ws, { t: T.OBSCURE_REGION, u: ROOM_OVERLAY_SESSION_INDEX, g: JSON.stringify(region) });
@@ -1884,7 +1899,6 @@ async function init() {
   const protoPath = pathModule.join(__dirname, '..', 'public', 'messages.proto');
   const root = await protobuf.load(protoPath);
   Msg = root.lookupType('Msg');
-  POOLED_MSG = Msg.create();
   debug('[PROTO DEBUG] room_board_size field in server Msg?',
     Object.keys(Msg.fields).filter(k => k.toLowerCase().includes('board')),
     'total fields:', Object.keys(Msg.fields).length);
@@ -1960,10 +1974,7 @@ async function init() {
  * @param {number|null} [excludeIndex=null] - The session index to exclude from the broadcast.
  */
 function broadcast(payload, excludeIndex = null) {
-  for (let key in POOLED_MSG) { if (POOLED_MSG.hasOwnProperty(key)) delete POOLED_MSG[key]; }
-  Object.assign(POOLED_MSG, payload);
-
-  const buffer = Msg.encode(POOLED_MSG).finish();
+  const buffer = Msg.encode(payload).finish();
 
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
@@ -2149,8 +2160,8 @@ const NON_USER_ACTIVITY_TYPES = new Set([
   T.TILE_UPDATE, T.TILE_CLEAR,
   T.AUTH_RESULT, T.MOD_RESULT, T.MOD_NOTIFY,
   T.ROOM_LIST_REQUEST, T.ROOM_LIST_RESPONSE, T.ROOM_ROLE_LIST_RESPONSE,
-  T.BW_PROBE_START, T.BW_PROBE_CHUNK, T.BW_REPORT, T.METRICS_UPDATE,
-  T.BOARD_SNAPSHOT_LIST_RESPONSE, T.BOARD_SNAPSHOT_JOIN_NOTIFY,
+  T.BW_PROBE_START, T.BW_PROBE_CHUNK, T.BW_REPORT,
+  T.BOARD_SNAPSHOT_LIST_RESPONSE,
   T.CHECKPOINT_LIST_RESPONSE, T.REPLAY_RESPONSE,
   T.COMPRESS_USER_STROKES,
   // The sync-parity heartbeat and its follow-ups. ParityClient sends
@@ -2710,7 +2721,18 @@ async function handleBroadcast(data, sessionIndex, room, ws) {
           sy: data.sy,
           sw: data.sw,
           sh: data.sh,
-          ps: Array.isArray(data.ps) ? Array.from(data.ps) : null
+          ps: Array.isArray(data.ps) ? Array.from(data.ps) : null,
+          // The seq this SEL_MASK is about to be broadcast under. The join
+          // serve needs it to decide whether the mask predates the checkpoint
+          // it is about to send (arm it up front) or was armed inside the tail
+          // (leave it to the tail, which carries SEL_MASK as tool state at the
+          // right position). Without the distinction, a mask armed late gets
+          // pre-armed and clips every EARLIER stroke the tail replays — see
+          // SyncCoordinator._sendActiveMasksToJoiner.
+          //
+          // +1 because this state update runs before the broadcastToRoom call
+          // at the bottom of handleBroadcast, which is what allocates the seq.
+          armedAtSeq: (room?.messageSequence ?? 0) + 1
         };
       } else {
         user.activeMask = null;
@@ -2953,7 +2975,11 @@ function enqueueClientOutbox(ws, buffer) {
     return closeSlowConsumer(ws, 'outbox');
   }
 
-  outbox.buffers.push(buffer.slice());
+  // Stored by reference. Callers must hand over a buffer that outlives this
+  // call — i.e. NOT a raw `Msg.encode(...).finish()` view into protobufjs's
+  // pooled slab, which the next encode overwrites. broadcastToRoom (the only
+  // caller) takes that copy once per broadcast rather than once per client.
+  outbox.buffers.push(buffer);
   outbox.bytes = nextBytes;
   noteQueuedBytes(byteLength);
   return true;
@@ -3083,21 +3109,26 @@ const BATCHABLE_TYPES = new Set([
  * @param {number|null} [excludeIndex=null] - The session index to exclude.
  */
 function broadcastToRoom(room, payload, excludeIndex = null) {
-  for (let key in POOLED_MSG) { if (POOLED_MSG.hasOwnProperty(key)) delete POOLED_MSG[key]; }
-  Object.assign(POOLED_MSG, payload);
+  const msg = { ...payload };
 
   if (room && room.messageSequence !== undefined) {
-    POOLED_MSG.seq = ++room.messageSequence;
+    msg.seq = ++room.messageSequence;
   }
 
-  const buffer = Msg.encode(POOLED_MSG).finish();
+  // One copy, taken once. `Msg.encode(...).finish()` hands back a view into
+  // protobufjs's pooled slab, which the very next encode overwrites — so the
+  // bytes must be copied before they outlive this call. Everything below
+  // (strokeLog, strokeTape, history, every client's outbox) can then share
+  // this one stable buffer instead of each taking its own copy; the outbox
+  // used to slice per client, making a broadcast O(clients) copies.
+  const buffer = Msg.encode(msg).finish().slice();
   const shouldBatch = BATCHABLE_TYPES.has(payload.t);
 
   // Phase 1: append commit-class messages to the room's stroke fingerprint log.
   // This is diagnostic-only for now — the actual parity protocol arrives in Phase 2.
   if (room?.strokeLog && isCommitType(payload.t)) {
     room.strokeLog.record({
-      seq: POOLED_MSG.seq,
+      seq: msg.seq,
       t: payload.t,
       userId: payload.u | 0,
       bytes: buffer,
@@ -3108,7 +3139,7 @@ function broadcastToRoom(room, payload, excludeIndex = null) {
   // a fresh joiner can redraw post-checkpoint strokes from the original commands.
   // Commit bytes themselves live in strokeLog; this fills the non-committed gap.
   if (room?.strokeTape) {
-    room.strokeTape.observe(payload.t, payload.u | 0, buffer, POOLED_MSG.seq, isCommitType(payload.t), payload);
+    room.strokeTape.observe(payload.t, payload.u | 0, buffer, msg.seq, isCommitType(payload.t), payload);
   }
 
   // Between-stroke cursor movement for the history backfill. The tape only
@@ -3117,14 +3148,14 @@ function broadcastToRoom(room, payload, excludeIndex = null) {
   // then teleported each cursor straight to the start of the next one. Hover
   // moves belong to no commit and are otherwise dropped entirely.
   //
-  // The copy is mandatory: `buffer` is the shared encoder output and is
-  // overwritten by the very next broadcast (same reason StrokeTape copies).
+  // `buffer` is already a private copy (see above), so it can be handed over
+  // directly — the tape keeps it for the life of the retention window.
   if (room?.history && payload.t === T.MM && !room.strokeTape?.isMidStroke?.(payload.u | 0)) {
     room.history.recordCursor({
-      seq: POOLED_MSG.seq,
+      seq: msg.seq,
       ts: Date.now(),
       userId: payload.u | 0,
-      bytes: new Uint8Array(buffer),
+      bytes: buffer,
     });
   }
 
@@ -3185,18 +3216,17 @@ function broadcastToRoom(room, payload, excludeIndex = null) {
 function broadcastSequencedRestore(room, payload) {
   if (!room) return;
 
-  for (let key in POOLED_MSG) { if (POOLED_MSG.hasOwnProperty(key)) delete POOLED_MSG[key]; }
-  Object.assign(POOLED_MSG, payload);
+  const msg = { ...payload };
 
   if (room.messageSequence !== undefined) {
-    POOLED_MSG.seq = ++room.messageSequence;
+    msg.seq = ++room.messageSequence;
   }
 
-  const buffer = Msg.encode(POOLED_MSG).finish();
+  const buffer = Msg.encode(msg).finish();
 
   if (room.strokeLog && isCommitType(payload.t)) {
     room.strokeLog.record({
-      seq: POOLED_MSG.seq,
+      seq: msg.seq,
       t: payload.t,
       userId: payload.u | 0,
       bytes: buffer,
@@ -3218,7 +3248,7 @@ function broadcastSequencedRestore(room, payload) {
   // Return the seq this restore was assigned so callers can re-baseline join
   // sync against it (truncate the command tail, register the restore image as
   // the new join checkpoint). Undefined when the room has no sequence counter.
-  return POOLED_MSG.seq;
+  return msg.seq;
 }
 
 /**
@@ -3615,18 +3645,17 @@ wss.on('connection', async (ws, req) => {
     }
 
     try {
-      let data;
-      const firstByte = rawData[0];
-
-      if (firstByte === 0x7B || firstByte === 0x22) {
-        const jsonString = rawData.toString('utf8');
-        data = JSON.parse(jsonString);
-      } else if (firstByte === 0x08) {
-        data = Msg.decode(new Uint8Array(rawData));
-      } else {
+      // Every client frame is protobuf and starts with field 1 (`t`), whose
+      // tag byte is 0x08 — protobufjs writes explicitly-set fields even at
+      // their default, so t=CONNECT(0) still emits it. Anything else is not
+      // ours. (A JSON ingress branch used to sit here for `{`/`"` frames; no
+      // client or test harness ever sent one, so it was only an extra
+      // unvalidated parse on an unauthenticated socket.)
+      if (rawData[0] !== 0x08) {
         debug.warn(`[WS] Dropping unknown message from session ${ws.sessionIndex ?? 'unassigned'}`);
         return;
       }
+      let data = Msg.decode(new Uint8Array(rawData));
 
       const requestedType = Number(data?.t);
 
