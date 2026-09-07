@@ -4467,12 +4467,18 @@ export class DrawingApp {
       this._updateTextPreview();
     }
 
-    if (tool === 'imageBrush' && this.self.imageBrush) {
-      const brush = this.self.imageBrush;
-      if (brush.type === 'gih' && brush.gBrushes && brush.gBrushes.length > 0) {
-        this.ui.setBrushPreview(brush.gBrushes[0].gimpUrl);
+    if (tool === 'imageBrush') {
+      if (this.self.imageBrush) {
+        const brush = this.self.imageBrush;
+        if (brush.type === 'gih' && brush.gBrushes && brush.gBrushes.length > 0) {
+          this.ui.setBrushPreview(brush.gBrushes[0].gimpUrl);
+        } else {
+          this.ui.setBrushPreview(brush.previewUrl || brush.gimpUrl);
+        }
       } else {
-        this.ui.setBrushPreview(brush.previewUrl || brush.gimpUrl);
+        // First time picking Image Brush: default to pepper, same as clicking
+        // its gallery tile, rather than leaving no brush selected.
+        this.brushGallery.selectBrushById('builtin:imageBrush:pepper.gbr');
       }
     }
 

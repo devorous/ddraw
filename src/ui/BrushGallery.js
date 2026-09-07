@@ -738,4 +738,25 @@ export class BrushGallery {
   getSelectedBrush() {
     return this.selectedBrush;
   }
+
+  /**
+   * Programmatically selects a brush by id, mirroring a user click (including
+   * the gallery tile's 'selected' highlight when its DOM tile already exists).
+   * @param {string} id - Brush id, e.g. 'builtin:imageBrush:pepper.gbr'
+   * @returns {boolean} - Whether a matching brush was found and selected
+   */
+  selectBrushById(id) {
+    const brush = this.brushes.find(b => b.id === id);
+    if (!brush) return false;
+
+    const itemEl = document.querySelector(`.brushItem[data-asset-id="${id}"]`);
+    if (itemEl) {
+      this.selectBrush(brush, itemEl);
+    } else {
+      this._clearSelectionInAllGalleries();
+      this.selectedBrush = brush;
+      this.onSelect(brush);
+    }
+    return true;
+  }
 }
