@@ -66,4 +66,13 @@ export class BrushGalleryLoader {
   getSelectedBrush() {
     return this.realGallery ? this.realGallery.getSelectedBrush() : null;
   }
+
+  /**
+   * Selects a brush by id, loading the real gallery first if needed.
+   * @param {string} id - Brush id, e.g. 'builtin:imageBrush:pepper.gbr'
+   * @returns {boolean} - Whether a matching brush was found and selected
+   */
+  selectBrushById(id) {
+    return this.loadRealGallery().selectBrushById(id);
+  }
 }
