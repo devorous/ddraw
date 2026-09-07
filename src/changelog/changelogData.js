@@ -1,7 +1,22 @@
 /** @fileoverview Curated changelog data for the "What's New" popup, generated from git history. */
 
 export const CHANGELOG = [
-  {v:'v1.15.0-beta', date:'2026-09-05', current:true, items:[
+  {v:'v1.15.1-beta', date:'2026-09-07', current:true, items:[
+    ['added', 'Added a new chat silence feature and the ability for moderators to delete chat messages'],
+    ['improved', 'Improved the rendering regions used by the select tool'],
+    ['fixed', 'Fixed an issue where unregistered rooms would not have their history/snapshots compressed, leading to excessive memory usage'],
+    ['improved', 'The image tool now automatically chooses the pepper brush'],
+    ['improved', 'Improved the moderation menu button and renamed it from "Bans" to "Mod"'],
+    ['fixed', 'Fixed a bug where pattern fill would not sync properly for joining users'],
+    ['fixed', 'Fixed some issues with the select tool and replay not working properly, and improved the fill tool rendering process'],
+    ['fixed', 'Fixed an issue with the eraser stroke preview being flickery'],
+  ], more:[
+    ['improved', 'Improved the dirty rectangle calculation for blurry strokes'],
+    ['fixed', 'Fixed a minor bug with username visibility while touch users are zooming/panning'],
+    ['fixed', 'Fixed a minor bug where users\' cursors could appear on the canvas occasionally while muted'],
+    ['improved', 'Various chat tweaks'],
+  ], moreTotal:4},
+  {v:'v1.15.0-beta', date:'2026-09-05', items:[
     ['added', 'Implemented a new tiled canvas rendering system that divides large boards into smaller tiles, improving rendering performance and memory usage on bigger boards'],
     ['improved', 'Reduced the rendering bounding boxes for the eraser, blur, confetti, image brush, pixel brush and shape tools so remote strokes only redraw the area that changed'],
     ['fixed', 'Fixed remote user rendering refreshing the entire board instead of just the active section'],

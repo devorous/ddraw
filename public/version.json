@@ -1,7 +1,7 @@
 {
-  "latest": "1.15.0-beta",
-  "minRequired": "1.15.0-beta",
-  "releaseDate": "2026-09-06T05:45:02.693Z",
-  "notes": "Implemented new WIP tiled rendering system to improve performance with larger canvas sizes.",
+  "latest": "1.15.1-beta",
+  "minRequired": "1.15.1-beta",
+  "releaseDate": "2026-09-07T09:29:46.431Z",
+  "notes": "New chat silence feature, mod message deletion, and various sync/rendering fixes.",
   "downloadUrl": "https://www.ddraw.ca/"
 }
