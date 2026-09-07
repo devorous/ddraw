@@ -8,7 +8,6 @@
   import { DEFAULT_SFX_PREFERENCES, saveAppPreferences } from '../../config/AppPreferences.js';
   import WindowTitleBar from './WindowTitleBar.svelte';
 
-  const CHAT_MODE_STORAGE_KEY = 'topdraw-chat-mode';
   const CHAT_POSITION_STORAGE_KEY = 'topdraw-chat-position';
   const COMPOSER_EMOJIS = [
     '\u{1F600}', '\u{1F603}', '\u{1F604}', '\u{1F601}', '\u{1F606}', '\u{1F605}',
@@ -94,7 +93,11 @@
 
   let activeView = $state('all');
   let messageInput = $state('');
-  let chatMode = $state(loadChatMode());
+  // Compact mode was removed — full is the only non-mini layout now, and mini
+  // already takes over automatically on small windows. Kept as a named
+  // constant (rather than inlining 'full' everywhere) because several
+  // functions below key stored position/size by mode name.
+  const chatMode = 'full';
   let messages = $state({
     all: [],
     staff: [],
@@ -136,7 +139,7 @@
   let isSmallScreen = $derived(windowWidth < 768);
   // Small-desktop windows fall back to mini; mobile has its own full-size
   // layout (html[data-mobile] geometry + hidden tool rail), so mini's
-  // compact controls would only shrink touch targets there.
+  // shrunk controls would only shrink touch targets there.
   let effectiveChatMode = $derived(isPopout ? 'full' : isSmallScreen && !isMobile() ? 'mini' : chatMode);
   let hideRoomNotifications = $derived(!!appState.currentRoomData?.hideChatNotifications);
   // Collapsed is the resting state for the in-app HUD; the popout is a real
@@ -231,28 +234,6 @@
 
   let toasts = $state([]);
   let toastIdCounter = 0;
-
-  function loadChatMode() {
-    // The desktop app's webview has its own storage, isolated from the
-    // browser's — it never inherits a "full" preference set there, so it
-    // needs its own default rather than falling back to the browser/embed
-    // default of "compact" (which stacks the composer tool buttons).
-    const defaultMode = isTauriDesktop() ? 'full' : 'compact';
-    try {
-      const stored = localStorage.getItem(CHAT_MODE_STORAGE_KEY);
-      return stored === 'full' || stored === 'compact' ? stored : defaultMode;
-    } catch {
-      return defaultMode;
-    }
-  }
-
-  function persistChatMode(mode) {
-    try {
-      localStorage.setItem(CHAT_MODE_STORAGE_KEY, mode);
-    } catch {
-      // Ignore storage failures.
-    }
-  }
 
   function loadChatPositions() {
     try {
@@ -402,14 +383,6 @@
     const nextFullscreen = !(await desktopWindowApi.isFullscreen());
     await desktopWindowApi.setFullscreen(nextFullscreen);
     await syncDesktopWindowState();
-  }
-
-  function toggleMode() {
-    if (isPopout) return;
-    persistCurrentChatPosition();
-    chatMode = chatMode === 'compact' ? 'full' : 'compact';
-    persistChatMode(chatMode);
-    scheduleApplyStoredPosition();
   }
 
   let lastNonZeroSfxVolume = $state(initialNonZeroSfxVolume());
@@ -2045,8 +2018,7 @@
       messages: serializeMessages(),
       dmMeta: [...dmMeta.entries()].map(([userId, user]) => [userId, { ...user }]),
       activeView,
-      recipient: recipient ? { ...recipient } : null,
-      chatMode
+      recipient: recipient ? { ...recipient } : null
     };
   }
 
@@ -2076,10 +2048,6 @@
 
     if ('recipient' in snapshot) {
       appState.dmRecipient = snapshot.recipient;
-    }
-
-    if (!isPopout && (snapshot.chatMode === 'full' || snapshot.chatMode === 'compact')) {
-      chatMode = snapshot.chatMode;
     }
   }
 
@@ -2448,7 +2416,6 @@
     class:popout={isPopout}
     class:desktop-popout={isPopout && isDesktopClient}
     class:mini={effectiveChatMode === 'mini'}
-    class:compact={effectiveChatMode === 'compact'}
     class:full={effectiveChatMode === 'full'}
     class:hud={!isPopout}
     class:awake={hudAwake}
@@ -2585,11 +2552,6 @@
           </button>
           <button class="topbar-btn chrome-btn" onclick={toggleFullscreenDesktopWindow} title={desktopWindowState.fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} type="button">
             {desktopWindowState.fullscreen ? '🡼' : '⛶'}
-          </button>
-        {/if}
-        {#if !isPopout && !isSmallScreen}
-          <button class="topbar-btn" onclick={toggleMode} title={effectiveChatMode === 'full' ? 'Use compact mode' : 'Use full mode'} type="button">
-            {effectiveChatMode === 'full' ? 'Small' : 'Full'}
           </button>
         {/if}
         <button class="topbar-btn" onclick={() => appState.ranksDialogVisible = true} title="View ranks and their abilities" type="button">Ranks</button>
@@ -2966,8 +2928,7 @@
   }
 
   /* Mobile composer: one flat row — [upload] [emoji] [input] [send] — with
-     uniform 44px touch targets, overriding compact mode's two-row grid
-     (stacked tools + a Send button spanning both rows). */
+     uniform 44px touch targets. */
   :global(html[data-mobile='true']) .chat-shell:not(.popout) .composer-row {
     grid-template-columns: 44px 44px minmax(0, 1fr) 44px;
     grid-template-rows: auto;
@@ -3196,8 +3157,7 @@
   }
 
   .chat-shell.popout,
-  .chat-shell.popout.full,
-  .chat-shell.popout.compact {
+  .chat-shell.popout.full {
     inset: 0;
     width: 100vw;
     height: 100vh;
@@ -3224,10 +3184,6 @@
     --chat-name-col: 108px;
     width: min(880px, calc(100vw - 44px));
     height: min(612px, calc(100vh - 56px));
-  }
-
-  .chat-shell.compact {
-    width: min(420px, calc(100vw - 24px));
   }
 
   .chat-shell.mini {
@@ -3824,12 +3780,11 @@
   /* Composer collapses to a single pill; the tools slide back in on wake.
      The negative margin cancels the row gap so nothing shifts sideways.
 
-     The mode rules (.chat-shell.compact/.full .chat-composer) paint an opaque
-     footer tint and are declared later in this file at equal specificity, so
+     The mode rule (.chat-shell.full .chat-composer) paints an opaque
+     footer tint and is declared later in this file at equal specificity, so
      the HUD has to name the mode too — otherwise the composer stays a solid
      bar while the surface behind it thins out. */
   .chat-shell.hud .chat-composer,
-  .chat-shell.hud.compact .chat-composer,
   .chat-shell.hud.full .chat-composer,
   .chat-shell.hud.mini .chat-composer {
     border-top: 0;
@@ -4291,14 +4246,6 @@
 
   .chat-shell.popout .chat-content {
     height: 100%;
-  }
-
-  .chat-shell.compact .chat-main {
-    position: relative;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-    z-index: 3;
   }
 
   .topbar-btn,
@@ -5225,8 +5172,8 @@
 
   .chat-composer {
     position: relative;
-    /* Above .chat-main (z-index 3 in compact) so the floating popovers render
-       over the message stream, not behind it. */
+    /* Above .chat-main so the floating popovers render over the message
+       stream, not behind it. */
     z-index: 5;
     display: flex;
     flex-direction: column;
@@ -5261,24 +5208,11 @@
     background: color-mix(in srgb, var(--bg-secondary) 88%, black 6%);
   }
 
-  .chat-shell.compact .chat-composer {
-    padding: 0.8rem 0.85rem 0.9rem;
-    background: color-mix(in srgb, var(--bg-secondary) 88%, black 6%);
-  }
-
   .composer-row {
     display: grid;
     grid-template-columns: auto auto minmax(0, 1fr) auto;
     gap: 0.5rem;
     align-items: end;
-  }
-
-  .chat-shell.compact .composer-row {
-    grid-template-columns: 36px minmax(0, 1fr) auto;
-    grid-template-rows: 1fr 1fr;
-    column-gap: 0.45rem;
-    row-gap: 0.3rem;
-    align-items: stretch;
   }
 
   .composer-file-input {
@@ -5299,23 +5233,6 @@
     font-size: 1rem;
     font-weight: 800;
     transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
-  }
-
-  .chat-shell.compact .composer-tool {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-    font-size: 0.92rem;
-  }
-
-  .chat-shell.compact .upload-tool {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .chat-shell.compact .emoji-tool {
-    grid-column: 1;
-    grid-row: 2;
   }
 
   .composer-tool:hover {
@@ -5389,73 +5306,6 @@
     color: white;
   }
 
-  .chat-shell.compact .emoji-picker {
-    gap: 0.26rem;
-    padding: 0.4rem 0.45rem;
-    box-sizing: border-box;
-    width: min(214px, 100%);
-    min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-  }
-
-  .chat-shell.compact .emoji-picker-section {
-    gap: 0.16rem;
-    min-width: 0;
-    max-width: 100%;
-  }
-
-  .chat-shell.compact .reaction-picker-label {
-    font-size: 0.58rem;
-    letter-spacing: 0.06em;
-  }
-
-  .chat-shell.compact .reaction-picker-grid {
-    display: grid;
-    grid-template-columns: repeat(6, 28px);
-    grid-auto-rows: 28px;
-    gap: 0.18rem;
-    min-width: 0;
-    width: 100%;
-    max-width: 100%;
-    box-sizing: border-box;
-    max-height: 152px;
-    overflow-y: auto;
-    overflow-x: hidden;
-    align-content: start;
-    padding: 0.02rem 0.1rem 0.1rem 0;
-    scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--accent-primary) 42%, transparent) transparent;
-  }
-
-  .chat-shell.compact .emoji-picker .emoji-btn {
-    width: 28px;
-    min-width: 28px;
-    height: 28px;
-    min-height: 28px;
-    border-radius: 8px;
-    font-size: 0.96rem;
-  }
-
-  .chat-shell.compact .reaction-picker-grid::-webkit-scrollbar {
-    width: 8px;
-  }
-
-  .chat-shell.compact .reaction-picker-grid::-webkit-scrollbar-track {
-    background: color-mix(in srgb, var(--bg-elevated) 42%, transparent);
-    border-radius: 999px;
-  }
-
-  .chat-shell.compact .reaction-picker-grid::-webkit-scrollbar-thumb {
-    background: color-mix(in srgb, var(--accent-primary) 44%, var(--bg-elevated));
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--bg-secondary) 70%, transparent);
-  }
-
-  .chat-shell.compact .reaction-picker-grid::-webkit-scrollbar-thumb:hover {
-    background: color-mix(in srgb, var(--accent-primary) 58%, var(--bg-elevated));
-  }
-
   .emoji-picker .emoji-btn {
     transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
   }
@@ -5513,24 +5363,6 @@
     outline: none;
   }
 
-  .chat-shell.compact .chat-input {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-    min-height: 78px;
-    padding: 0.7rem 0.85rem;
-  }
-
-
-  .chat-shell.compact .chat-input-wrap {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-  }
-
-  .chat-shell.compact .chat-input {
-    min-height: 78px;
-    padding: 0.7rem 0.85rem;
-  }
-
   .chat-input {
     transition: border-color 0.16s ease, background 0.16s ease;
   }
@@ -5582,26 +5414,9 @@
     pointer-events: none;
   }
 
-  /* Compact's Send spans two composer rows — scale the glyph with it. */
-  .chat-shell.compact .chat-send-icon {
-    width: 34px;
-    height: 34px;
-  }
-
   .chat-shell.mini .chat-send-icon {
     width: 18px;
     height: 18px;
-  }
-
-  /* Compact's Send spans both composer rows — 78px square to match that span. */
-  .chat-shell.compact .chat-send {
-    grid-column: 3;
-    grid-row: 1 / span 2;
-    width: 78px;
-    min-width: 78px;
-    height: 78px;
-    min-height: 78px;
-    padding: 0;
   }
 
   .chat-send:hover {
@@ -5721,8 +5536,7 @@
       bottom: 12px;
     }
 
-    .chat-shell.full,
-    .chat-shell.compact {
+    .chat-shell.full {
       right: 12px;
       bottom: 12px;
       width: calc(100vw - 24px);
@@ -5744,8 +5558,7 @@
     }
 
     .chat-shell,
-    .chat-shell.full,
-    .chat-shell.compact {
+    .chat-shell.full {
       right: 8px;
       bottom: 8px;
       width: calc(100vw - 16px);
