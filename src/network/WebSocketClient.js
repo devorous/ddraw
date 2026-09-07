@@ -1110,6 +1110,7 @@ export class WebSocketClient {
           textPositionOffset: u.to,
           registeredName: u.rn || '',
           isMuted: !!u.mt,
+          isSilenced: !!u.sl,
           hasDiscord: !!u.hdsc,
           selectedBadge: u.bdg || '',
           isSupporter: !!u.sup,
@@ -1349,6 +1350,21 @@ export class WebSocketClient {
 
       case T.STAFF_MSG:
         this.emit('staff_msg', { sessionIndex: data.u, message: data.g, messageId: data.chatMessageId });
+        break;
+
+      case T.MSG_DELETE:
+        this.emit('msg_delete', { messageId: data.chatMessageId, staff: false });
+        break;
+
+      case T.STAFF_MSG_DELETE:
+        this.emit('msg_delete', { messageId: data.chatMessageId, staff: true });
+        break;
+
+      case T.CHAT_WARNING:
+        this.emit('chat_warning', {
+          level: data.chatWarningLevel || 1,
+          cooldownMs: data.chatCooldownMs || 0
+        });
         break;
 
       case T.GLOBAL_MESSAGE:
@@ -2422,6 +2438,17 @@ export class WebSocketClient {
    */
   broadcastStaffChat(message, messageId) {
     this.send({ t: T.STAFF_MSG, g: message, chatMessageId: messageId });
+  }
+
+  /**
+   * Mod-only: deletes a chat message for everyone by id.
+   * @param {string} messageId
+   * @param {boolean} [staff=false] - Whether this is a staff-channel message.
+   * @returns {void}
+   */
+  sendMsgDelete(messageId, staff = false) {
+    if (!messageId) return;
+    this.send({ t: staff ? T.STAFF_MSG_DELETE : T.MSG_DELETE, chatMessageId: messageId });
   }
 
   /**

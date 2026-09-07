@@ -725,12 +725,14 @@ const GATING_PROBES = [
   { name: 'SEL_STAMP',         t: T.SEL_STAMP, board: true, send: (b) => b.send({ t: T.SEL_STAMP, sx: 0, sy: 0, sw: 10, sh: 10, ly: 0 }) },
   { name: 'MIR (mirror toggle)', t: T.MIR, board: true, send: (b) => b.send({ t: T.MIR }) },
   { name: 'KP (text keypress)', t: T.KP, board: true, send: (b) => b.send({ t: T.KP, k: 'a' }) },
-  { name: 'MSG (chat)',        t: T.MSG, board: true, send: (b) => b.chat(`probe_${Date.now()}`) },
 
   // — presence / tool state (control arm) —
   { name: 'CT (change tool)',  t: T.CT, board: false, send: (b) => b.send({ t: T.CT, l: 1 }) },
   { name: 'CC (change color)', t: T.CC, board: false, send: (b) => b.send({ t: T.CC, c: 4278190335 }) },
   { name: 'CS (change size)',  t: T.CS, board: false, send: (b) => b.send({ t: T.CS, s: 2000 }) },
+  // MSG is chat, not board. Mute is board-only now (silence is the chat-only
+  // gate) — so a muted-but-not-silenced user's chat must still get through.
+  { name: 'MSG (chat)',        t: T.MSG, board: false, send: (b) => b.chat(`probe_${Date.now()}`) },
 ];
 
 /**

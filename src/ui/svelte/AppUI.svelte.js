@@ -561,7 +561,8 @@ export function initSvelteUI(app) {
         onStaffSendImage: (imageData) => app.handleStaffChatImageSend?.(imageData),
         onDM: (message, recipientId) => app.handleDMSend?.(message, recipientId),
         onSendImage: (imageData, recipientId) => app.handleChatImageSend?.(imageData, recipientId),
-        onReact: (payload) => app.handleChatReaction?.(payload)
+        onReact: (payload) => app.handleChatReaction?.(payload),
+        onDeleteMessage: (messageId, staff) => app.handleChatDeleteMessage?.(messageId, staff)
       }
     });
   }

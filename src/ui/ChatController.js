@@ -108,6 +108,11 @@ export class ChatController {
     }
   }
 
+  handleDeleteMessage(messageId, staff = false) {
+    if (!this.app.connected || !messageId) return;
+    this._queueBroadcast(() => this.app.wsClient.sendMsgDelete(messageId, staff));
+  }
+
   _createChatMessageId() {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
       return crypto.randomUUID();

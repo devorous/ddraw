@@ -157,6 +157,9 @@ message Msg {
     ROOM_START_SNAPSHOT_INFO = 151; // Server->client: room_start_snapshot_state + snapshot_list[0]
     ROOM_START_SNAPSHOT_SET = 152;  // Client->server: pin snapshot_id (empty = clear the pin)
     SEL_HIDE = 153;                 // Hide/show the sender's selection outline on other clients' boards (e.g. while the save dialog is open)
+    MSG_DELETE = 154;               // Mod deletes a public chat message (broadcast removal by chat_message_id)
+    STAFF_MSG_DELETE = 155;         // Mod deletes a staff chat message (broadcast removal by chat_message_id)
+    CHAT_WARNING = 156;             // Server->client: chat spam warning/cooldown notice (see chat_cooldown_ms, chat_warning_level)
   }
 
   // Tool enum
@@ -254,6 +257,7 @@ message Msg {
     bool sup = 38;          // Whether this user is an active supporter (gold cosmetics)
     string ctry = 39;       // ISO 3166-1 alpha-2 country code derived from IP geolocation
     bool sb = 40;           // Shadow-banned (MOD+ viewers only; never sent true on the subject's own row)
+    bool sl = 41;           // Whether the user is currently silenced (chat-only mute: blocks MSG/DM/CHAT_IMG, not drawing)
   }
   repeated U us = 17;   // Users array
 
@@ -303,7 +307,7 @@ message Msg {
   bool auth_supporter = 199;           // AUTH_RESULT: whether the account has an active supporter subscription
 
   // === Moderation Fields (34-42) ===
-  uint32 mod_action_type  = 34;  // 0=kick, 1=mute, 2=ban, 3=unmute, 4=unban, 5=updateReason, 6=shadowban, 7=unshadowban, 8=updateDuration
+  uint32 mod_action_type  = 34;  // 0=kick, 1=mute, 2=ban, 3=unmute, 4=unban, 5=updateReason, 6=shadowban, 7=unshadowban, 8=updateDuration, 9=silence, 10=unsilence
   uint32 mod_target       = 35;  // Target session index
   string mod_reason       = 36;  // Reason for action
   uint32 mod_duration     = 37;  // Duration in minutes (0=permanent)
@@ -316,7 +320,7 @@ message Msg {
   // Moderation entry for active bans/mutes list
   message ModEntry {
     string id        = 1;   // DB entry ID
-    uint32 type      = 2;   // 0=ban, 1=mute, 2=shadowban
+    uint32 type      = 2;   // 0=ban, 1=mute, 2=shadowban, 3=silence
     string username  = 3;
     string reason    = 4;
     string ip        = 5;   // Masked range string (e.g. "2001:db8:abcd::/64")
@@ -459,9 +463,11 @@ message Msg {
   uint64 checkpoint_ts = 112;        // Checkpoint timestamp
   string checkpoint_uploader = 113;  // Username who uploaded
   string room_dedicated_replay_user = 114; // SETTINGS: dedicated replay uploader username
-  string chat_message_id = 124;      // Shared ID for chat text/image/reaction targets
+  string chat_message_id = 124;      // Shared ID for chat text/image/reaction targets, and for MSG_DELETE/STAFF_MSG_DELETE
   string chat_reaction = 125;        // Emoji reaction payload
   bool chat_reaction_remove = 126;   // Whether this reaction is being removed
+  uint32 chat_cooldown_ms = 211;     // CHAT_WARNING: cooldown remaining before the sender may chat again (ms)
+  uint32 chat_warning_level = 212;   // CHAT_WARNING: 1=first warning, 2=second warning, 3=auto-silenced
   string fa = 146;                   // Floating art (gallery item JSON) for FLOATING_ART_UPDATE
   uint32 room_floating_gallery_seed = 147; // ROOM_UPDATE/SETTINGS: shared floating gallery layout seed
   repeated string room_floating_gallery_include_ids = 148; // ROOM_UPDATE/SETTINGS: explicitly included gallery ids

@@ -89,6 +89,7 @@ export class User {
     this.isSupporter = !!options.isSupporter;
     this.countryCode = options.countryCode || '';
     this.isMuted = options.isMuted || false;
+    this.isSilenced = options.isSilenced || false;
     this.isShadowBanned = options.isShadowBanned || false;
     this.ipHash = options.ipHash || options.iph || '';
     this.visibleIp = options.visibleIp || '';

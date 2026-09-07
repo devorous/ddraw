@@ -29,7 +29,7 @@ import { hashPassword, verifyPassword, generateToken, verifyToken } from './auth
 import { getUserFromToken } from './authUser.js';
 import { isSupporterActive } from './supporter.js';
 import { handleCreateCheckoutSession, handleCreatePortalSession, handleStripeWebhook, setSupporterChangeNotifier } from './stripeRoutes.js';
-import { issueModAction, revokeModAction, revokeMatchingModActions, updateModActionReason, updateModActionDuration, getModActionById, getModEntries, obfuscateIp, checkBan, checkMute, checkShadowBan } from './moderation.js';
+import { issueModAction, revokeModAction, revokeMatchingModActions, updateModActionReason, updateModActionDuration, getModActionById, getModEntries, obfuscateIp, checkBan, checkMute, checkSilence, checkShadowBan } from './moderation.js';
 import { ENABLE_SERVER_REPLAY_DB } from './replayConfig.js';
 import { T, Tool, ToolNames, ToolToEnum } from '../shared/MessageTypes.js';
 import { isCommitType, COMMIT_KIND } from '../shared/StrokeFingerprint.js';
@@ -1667,6 +1667,7 @@ function mapUsersForBroadcast(users, viewer = null, room = null) {
         // drawing and surface a "You are muted" toast, revealing the mod
         // action and defeating the silent-confinement point of shadowban.
         mt: (u.isShadowBanned && viewer && u.sessionIndex === viewer.sessionIndex) ? false : !!u.isMuted,
+        sl: !!u.isSilenced,
         hdsc: !!u.hasDiscord,
         bdg: u.selectedBadge || '',
         sup: !!u.isSupporter,
@@ -1892,6 +1893,36 @@ async function applyMuteStateToClient(client, room, options = {}) {
   }
 
   return { shouldMute, muteReason };
+}
+
+/**
+ * Re-checks a persisted silence (chat-only mute) entry for a client and syncs
+ * client.isSilenced / the room's user record. Unlike mute, silence has no
+ * guest/VPN auto-trigger — it is only ever mod-issued.
+ */
+async function applySilenceStateToClient(client, room, {
+  userId = client.userId || null,
+  effectiveRole = client.userRole || Role.GUEST
+} = {}) {
+  let shouldSilence = false;
+  let silenceReason = '';
+
+  if (getDB()) {
+    const silenceCheck = await checkSilence(userId, client.clientIp, room.id);
+    if (silenceCheck && effectiveRole < Role.MOD) {
+      shouldSilence = true;
+      silenceReason = silenceCheck.reason || '';
+    }
+  }
+
+  client.isSilenced = shouldSilence;
+
+  const roomUser = room.sessionManager.getUser(client.sessionIndex);
+  if (roomUser) {
+    roomUser.isSilenced = shouldSilence;
+  }
+
+  return { shouldSilence, silenceReason };
 }
 
 /**
@@ -2150,13 +2181,59 @@ function shouldSkipJoinSyncPending(client, messageType) {
 const MUTED_BLOCKED = new Set([
   T.MM, T.MD, T.MU, T.KP, T.TEXT_APPLY, T.TEXT_REMOVE, T.CLR, T.FILL,
   T.SEL_LIFT, T.SEL_MOVE, T.SEL_COMMIT, T.SEL_DELETE, T.SEL_FILL, T.SEL_STAMP, T.SEL_FLIP, T.SEL_MERGE, T.SEL_CANCEL, T.SEL_TO_BRUSH, T.SEL_MASK, T.OBSCURE_REGION,
-  T.IMG_PASTE, T.MSG, T.DM, T.CHAT_IMG, T.GLITCH_RESULT,
+  T.IMG_PASTE, T.GLITCH_RESULT,
   T.MIR, T.MIRROR_REGION,
   // Undo/redo mutate the board like anything else. Scoped to the sender's own
   // strokes, so blocking them also stops a muted user withdrawing their own
   // work — the deliberate reading of "muted means cannot affect the board".
   T.UNDO, T.REDO
 ]);
+
+// Silence is a chat-only mute: it never touches drawing/undo, just the
+// message-entry types. Kept separate from MUTED_BLOCKED so a board mute and
+// a chat silence are independent moderation actions (see permissions.js
+// MOD_SILENCE/MOD_UNSILENCE).
+const SILENCED_BLOCKED = new Set([T.MSG, T.DM, T.CHAT_IMG]);
+
+// ── Chat spam escalation ─────────────────────────────────────────────
+// Sliding-window rate limit on chat sends (see SILENCED_BLOCKED types above).
+// Tripping it escalates per-connection: warn + 10s cooldown, then warn + 30s
+// cooldown, then a real (DB-persisted) silence — same mechanism a mod would
+// issue by hand, so an auto-silenced user shows up in the mod panel and can
+// be unsilenced the normal way. State lives on the ws connection and resets
+// on reconnect; it is not meant to survive a fresh session.
+const CHAT_SPAM_WINDOW_MS = 8000;
+const CHAT_SPAM_THRESHOLD = 5; // messages within the window before it trips
+const CHAT_SPAM_COOLDOWNS_MS = [10000, 30000]; // level 1, level 2 — level 3+ auto-silences
+const CHAT_SPAM_AUTO_SILENCE_MINUTES = 30;
+
+/**
+ * @returns {null|{level:number, cooldownMs:number, silenced:boolean}} null when the send is allowed.
+ */
+function checkChatSpam(ws) {
+  if ((ws.userRole || 0) >= Role.MOD) return null; // MOD(4)+ exempt, same as mute/silence
+
+  const now = Date.now();
+  if (ws.chatCooldownUntil && now < ws.chatCooldownUntil) {
+    return { level: ws.chatSpamLevel || 1, cooldownMs: ws.chatCooldownUntil - now, silenced: false };
+  }
+
+  ws.chatMsgTimestamps = (ws.chatMsgTimestamps || []).filter((ts) => now - ts < CHAT_SPAM_WINDOW_MS);
+  ws.chatMsgTimestamps.push(now);
+  if (ws.chatMsgTimestamps.length <= CHAT_SPAM_THRESHOLD) return null;
+
+  ws.chatMsgTimestamps = [];
+  const level = (ws.chatSpamLevel || 0) + 1;
+  ws.chatSpamLevel = level;
+
+  if (level > CHAT_SPAM_COOLDOWNS_MS.length) {
+    return { level, cooldownMs: 0, silenced: true };
+  }
+
+  const cooldownMs = CHAT_SPAM_COOLDOWNS_MS[level - 1];
+  ws.chatCooldownUntil = now + cooldownMs;
+  return { level, cooldownMs, silenced: false };
+}
 
 const NON_USER_ACTIVITY_TYPES = new Set([
   T.CONNECT, T.USERS, T.SETTINGS, T.LEFT, T.AFK,
@@ -2845,11 +2922,51 @@ async function handleBroadcast(data, sessionIndex, room, ws) {
         if (client.userRole >= Role.MOD) {  // MOD(4)+ are exempt from mute
           break;
         }
-        if (data.t === T.MSG || data.t === T.DM || data.t === T.CHAT_IMG) {
-          sendTo(client, { t: T.MOD_RESULT, a: false, authError: 'You are muted' });
-        }
         return;
       }
+    }
+  }
+
+  if (SILENCED_BLOCKED.has(data.t)) {
+    for (const client of wss.clients) {
+      if (client.sessionIndex === sessionIndex && client.isSilenced) {
+        if (client.userRole >= Role.MOD) {  // MOD(4)+ are exempt from silence
+          break;
+        }
+        sendTo(client, { t: T.MOD_RESULT, a: false, authError: 'You are silenced' });
+        return;
+      }
+    }
+
+    const spamResult = checkChatSpam(ws);
+    if (spamResult) {
+      if (spamResult.silenced) {
+        ws.isSilenced = true;
+        const roomUser = room.sessionManager.getUser(sessionIndex);
+        if (roomUser) roomUser.isSilenced = true;
+        if (getDB()) {
+          await issueModAction({
+            type: 'silence',
+            targetUserId: ws.userId || null,
+            targetUsername: ws.username || `User ${sessionIndex}`,
+            targetIp: ws.clientIp || null,
+            ipScope: 'subnet',
+            reason: 'Automatic: chat spam',
+            issuedBy: null,
+            issuedByUsername: 'System (auto-mod)',
+            issuedByRole: Role.MOD,
+            duration: CHAT_SPAM_AUTO_SILENCE_MINUTES,
+            roomId: room.id
+          });
+        }
+        broadcastUsersForRoom(room);
+      }
+      sendTo(ws, {
+        t: T.CHAT_WARNING,
+        chatWarningLevel: spamResult.level,
+        chatCooldownMs: spamResult.silenced ? 0 : spamResult.cooldownMs
+      });
+      return;
     }
   }
 
@@ -4160,6 +4277,28 @@ wss.on('connection', async (ws, req) => {
           }
           break;
 
+        case T.MSG_DELETE: {
+          if (!authorize(ws, Action.MOD_DELETE_MSG, sendTo, T.MOD_RESULT)) break;
+          const deletedMessageId = (data.chatMessageId || '').trim();
+          if (!deletedMessageId) break;
+          broadcastToRoom(room, { t: T.MSG_DELETE, chatMessageId: deletedMessageId });
+          break;
+        }
+
+        case T.STAFF_MSG_DELETE: {
+          if (!authorize(ws, Action.MOD_DELETE_MSG, sendTo, T.MOD_RESULT)) break;
+          const deletedStaffMessageId = (data.chatMessageId || '').trim();
+          if (!deletedStaffMessageId) break;
+          for (const client of wss.clients) {
+            if (client.readyState !== WebSocket.OPEN) continue;
+            const clientRoom = roomManager.getRoomByClient(client);
+            if (clientRoom !== room) continue;
+            if ((client.userRole || 0) < Role.MOD) continue;
+            sendTo(client, { t: T.STAFF_MSG_DELETE, chatMessageId: deletedStaffMessageId });
+          }
+          break;
+        }
+
         case T.CHAT_REACTION:
           if (ws.isShadowBanned) break;
           if (ws.sessionIndex !== undefined) {
@@ -4198,7 +4337,9 @@ wss.on('connection', async (ws, req) => {
             Action.MOD_UPDATE,
             Action.MOD_SHADOWBAN,
             Action.MOD_UNSHADOWBAN,
-            Action.MOD_UPDATE_DURATION
+            Action.MOD_UPDATE_DURATION,
+            Action.MOD_SILENCE,
+            Action.MOD_UNSILENCE
           ];
           const requiredAction = MOD_ACTION_MAP[modActionType];
           if (!requiredAction || !authorize(ws, requiredAction, sendTo, T.MOD_RESULT)) {
@@ -4448,11 +4589,113 @@ wss.on('connection', async (ws, req) => {
                 break;
               }
 
-              case 5: { // Update reason for an existing kick/mute/ban
-                // modDuration is repurposed here to carry the original action code (0=kick,1=mute,2=ban)
+              case 9: { // Silence (chat-only mute)
+                if (targetRole >= Role.MOD) {
+                  rejectProtectedTarget('Users with MOD rank or higher cannot be silenced');
+                  break;
+                }
+                if (targetRole > issuerAuthority) {
+                  rejectProtectedTarget('Cannot silence a user with a higher role than your own');
+                  break;
+                }
+                const isGlobalSilence = (ws.globalRole || 0) >= Role.HOLY;
+                if (getDB()) {
+                  await issueModAction({
+                    type: 'silence',
+                    targetUserId,
+                    targetUsername: targetName,
+                    targetIp,
+                    ipScope: modIpScope,
+                    reason: modReason,
+                    issuedBy: ws.userId || null,
+                    issuedByUsername: ws.username || '',
+                    issuedByRole: issuerAuthority,
+                    duration: modDuration,
+                    roomId: isGlobalSilence ? null : room.id
+                  });
+                }
+                if (targetWs) {
+                  targetWs.isSilenced = true;
+                  targetWs.chatSpamLevel = 0;
+                  targetWs.chatCooldownUntil = 0;
+                }
+                if (targetUser) {
+                  targetUser.isSilenced = true;
+                }
+                roomBroadcaster({
+                  t: T.USERS
+                });
+                roomBroadcaster({
+                  t: T.MOD_NOTIFY,
+                  modActionType: 9,
+                  modTarget: modTargetIndex,
+                  modTargetName: targetName,
+                  modIssuerName: ws.username || `User ${ws.sessionIndex}`,
+                  modReason: modReason
+                });
+                break;
+              }
+
+              case 10: { // Unsilence
+                let rankBlocked = false;
+                if (getDB()) {
+                  const revokeEntryId = (data.modReason || '').trim();
+                  const hasSpecificEntryId = /^[a-f0-9]{24}$/i.test(revokeEntryId);
+
+                  if (hasSpecificEntryId) {
+                    const entry = await getModActionById(revokeEntryId);
+                    if (entry && (entry.issuedByRole || 0) > issuerAuthority) {
+                      rejectProtectedTarget('Cannot unsilence a user silenced by a higher-ranked moderator');
+                      rankBlocked = true;
+                    } else {
+                      await revokeModAction(revokeEntryId, ws.userId);
+                    }
+                  } else {
+                    await revokeMatchingModActions({
+                      type: 'silence',
+                      targetUserId,
+                      targetIp,
+                      targetUsername: targetName || null,
+                      roomId: room.id,
+                      revokedById: ws.userId,
+                      maxIssuedByRole: issuerAuthority
+                    });
+                  }
+                }
+                if (rankBlocked) break;
+
+                let stillSilenced = false;
+                if (targetWs) {
+                  const remainingSilence = await checkSilence(targetWs.userId || null, targetWs.clientIp || null, room.id);
+                  stillSilenced = !!remainingSilence && (targetWs.userRole || 0) < Role.MOD;
+                  targetWs.isSilenced = stillSilenced;
+                  if (!stillSilenced) {
+                    targetWs.chatSpamLevel = 0;
+                    targetWs.chatCooldownUntil = 0;
+                  }
+                }
+                if (targetUser) {
+                  targetUser.isSilenced = stillSilenced;
+                }
+                roomBroadcaster({
+                  t: T.USERS
+                });
+                roomBroadcaster({
+                  t: T.MOD_NOTIFY,
+                  modActionType: 10,
+                  modTarget: modTargetIndex,
+                  modTargetName: targetName,
+                  modIssuerName: ws.username || `User ${ws.sessionIndex}`,
+                  modReason: modReason
+                });
+                break;
+              }
+
+              case 5: { // Update reason for an existing kick/mute/ban/silence
+                // modDuration is repurposed here to carry the original action code (0=kick,1=mute,2=ban,9=silence)
                 const origActionCode = modDuration;
-                if (origActionCode === 1 || origActionCode === 2) {
-                  const type = origActionCode === 1 ? 'mute' : 'ban';
+                if (origActionCode === 1 || origActionCode === 2 || origActionCode === 9) {
+                  const type = origActionCode === 1 ? 'mute' : origActionCode === 9 ? 'silence' : 'ban';
                   if (getDB()) {
                     await updateModActionReason(
                       targetUserId,
@@ -5166,6 +5409,10 @@ wss.on('connection', async (ws, req) => {
                 userId: targetClient.userId || null,
                 effectiveRole: effective
               });
+              await applySilenceStateToClient(targetClient, room, {
+                userId: targetClient.userId || null,
+                effectiveRole: effective
+              });
 
               // Notify the target user of their new role
               sendTo(targetClient, { t: T.AUTH_RESULT, a: true, authRole: effective, authGlobalRole: targetClient.globalRole || 0, authRoomRole: targetClient.roomRole || 0 });
@@ -5312,6 +5559,10 @@ wss.on('connection', async (ws, req) => {
                   }
 
                   const { shouldMute } = await applyMuteStateToClient(client, clientRoom, {
+                    userId: client.userId || null,
+                    effectiveRole
+                  });
+                  await applySilenceStateToClient(client, clientRoom, {
                     userId: client.userId || null,
                     effectiveRole
                   });
@@ -5651,6 +5902,10 @@ wss.on('connection', async (ws, req) => {
               userId: userDoc._id.toString(),
               effectiveRole
             });
+            await applySilenceStateToClient(ws, room, {
+              userId: userDoc._id.toString(),
+              effectiveRole
+            });
             debug(`[Auth] Login success: ${userDoc.username} (global=${userDoc.role}, room=${roomRoleVal}, effective=${effectiveRole}) in room ${room.id}`);
             if (room.settings.autoMuteVpnUsers && ws.isVpnNetwork && !isVpnAutoMuteExempt(effectiveRole) && shouldMute) {
               console.warn(`[Security] Auto-muted user ${userDoc.username} on VPN ASN ${ws.clientAsn || 'unknown'} in room ${room.id}`);
@@ -5666,6 +5921,7 @@ wss.on('connection', async (ws, req) => {
               user.selectedBadge = userDoc.selectedBadge || '';
               user.isSupporter = isSupporterActive(userDoc);
               user.isMuted = !!ws.isMuted;
+              user.isSilenced = !!ws.isSilenced;
               user.isShadowBanned = !!ws.isShadowBanned;
               user.isVPN = !!ws.isVPN;
               // Hydrate persisted bandwidth estimate so the first election has data

@@ -72,7 +72,12 @@ export const T = {
   ROOM_START_SNAPSHOT_SET: 152,
   // Hide/show the sender's selection outline on other clients' boards (e.g.
   // while the save dialog is open) — see server/index.js INACTIVE_FILTERED_TYPES.
-  SEL_HIDE: 153
+  SEL_HIDE: 153,
+  // Mod deletes a chat message for everyone (broadcast removal by chat_message_id).
+  MSG_DELETE: 154,
+  STAFF_MSG_DELETE: 155,
+  // Server->client: chat spam warning/cooldown notice.
+  CHAT_WARNING: 156
 };
 
 /**

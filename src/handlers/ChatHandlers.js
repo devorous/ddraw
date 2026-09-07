@@ -120,4 +120,13 @@ export function setupChatHandlers(wsClient, app) {
     app.svelteComponents?.chat?.applyReaction(data);
     broadcastChatPopoutEvent('applyReaction', [data]);
   });
+
+  wsClient.on('msg_delete', (data) => {
+    app.svelteComponents?.chat?.removeMessage(data.messageId);
+    broadcastChatPopoutEvent('removeMessage', [data.messageId]);
+  });
+
+  wsClient.on('chat_warning', (data) => {
+    app.svelteComponents?.chat?.showSpamWarning(data.level, data.cooldownMs);
+  });
 }

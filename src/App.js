@@ -768,7 +768,7 @@ export class DrawingApp {
       this.wsClient.requestModList({ showHistory, search });
     };
     this.moderation.onRevokeEntry = (entryId, entryType, username) => {
-      const revokeType = entryType === 'mutes' ? 3 : entryType === 'shadowbans' ? 7 : 4;
+      const revokeType = entryType === 'mutes' ? 3 : entryType === 'shadowbans' ? 7 : entryType === 'silences' ? 10 : 4;
       // The moderation entry has no live session index of its own — resolve one
       // from the currently connected users so the server can clear the target's
       // in-memory muted/shadowbanned flag right away, not just the DB record.
@@ -4898,6 +4898,7 @@ export class DrawingApp {
       <button type="button" class="menuItem" data-action="pm">Message</button>
       <div class="menuDivider"></div>
       <button type="button" class="menuItem" data-action="mute">Mute</button>
+      <button type="button" class="menuItem" data-action="silence">Silence</button>
       <button type="button" class="menuItem danger" data-action="kick">Kick</button>
       <button type="button" class="menuItem danger" data-action="ban">Ban</button>
       <button type="button" class="menuItem danger" data-action="wipe">Wipe Strokes</button>
@@ -5306,6 +5307,8 @@ export class DrawingApp {
   handleDMSend(message, recipientId) { this.chatController.handleDMSend(message, recipientId); }
   handleChatImageSend(imageData, recipientId) { this.chatController.handleChatImageSend(imageData, recipientId); }
   handleChatReaction(payload) { this.chatController.handleChatReaction(payload); }
+
+  handleChatDeleteMessage(messageId, staff) { this.chatController.handleDeleteMessage(messageId, staff); }
   updateChatUserList() { this.chatController.updateChatUserList(); }
 
   getCurrentToolPresetSettings(toolName = this.self?.tool) {

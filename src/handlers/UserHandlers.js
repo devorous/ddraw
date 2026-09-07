@@ -299,6 +299,10 @@ export function setupUserHandlers(wsClient, app) {
           app._updateBlurCannotDraw?.();
           ui.setSelfUserMuted?.(app.self.isMuted);
         }
+        if (userData.isSilenced !== undefined && userData.isSilenced !== app.self.isSilenced) {
+          app.self.isSilenced = !!userData.isSilenced;
+          app.svelteComponents?.chat?.setSilenced(app.self.isSilenced);
+        }
         if (userData.role !== undefined && effectiveRole !== app.self.role) {
           app.selfRole = effectiveRole;
           app.self.role = effectiveRole;
@@ -342,6 +346,7 @@ export function setupUserHandlers(wsClient, app) {
           globalRole: userData.globalRole || 0,
           roomRole: userData.roomRole || 0,
           isMuted: !!userData.isMuted,
+          isSilenced: !!userData.isSilenced,
           isShadowBanned: !!userData.isShadowBanned,
           ipHash: userData.iph || userData.ipHash || '',
           visibleIp: userData.visibleIp || '',
@@ -480,6 +485,9 @@ export function setupUserHandlers(wsClient, app) {
         if (userData.isMuted !== undefined && userData.isMuted !== user.isMuted) {
           user.isMuted = !!userData.isMuted;
           ui.setRemoteUserMuted?.(userData.sessionIndex, user.isMuted);
+        }
+        if (userData.isSilenced !== undefined && userData.isSilenced !== user.isSilenced) {
+          user.isSilenced = !!userData.isSilenced;
         }
         if (userData.isShadowBanned !== undefined && userData.isShadowBanned !== user.isShadowBanned) {
           user.isShadowBanned = !!userData.isShadowBanned;

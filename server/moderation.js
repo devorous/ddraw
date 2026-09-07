@@ -114,6 +114,30 @@ export async function checkMute(userId, ip, roomId = null) {
 }
 
 /**
+ * Checks if a user is currently silenced (chat-only mute).
+ * @param {string|null} userId - The unique ID of the user.
+ * @param {string|null} ip - The IP address of the user.
+ * @param {string|null} [roomId] - When set, matches room-scoped OR global silences.
+ * @returns {Promise<Object|null>} - The silence entry if active, otherwise null.
+ */
+export async function checkSilence(userId, ip, roomId = null) {
+  const db = getDB();
+  if (!db) return null;
+
+  const conditions = buildTargetConditions({ targetUserId: userId, targetIp: ip });
+  if (conditions.length === 0) return null;
+
+  return db.collection('moderation').findOne({
+    type: 'silence',
+    active: true,
+    $and: [
+      { $or: conditions },
+      buildRoomCondition(roomId)
+    ]
+  });
+}
+
+/**
  * @param {Object} opts
  * @param {string|null} [opts.userId]
  * @param {string|null} [opts.ip]
@@ -421,7 +445,7 @@ export async function getModEntries({ showHistory = false, search = '', roomId =
 
     return {
       id: e._id.toString(),
-      type: e.type === 'ban' ? 0 : e.type === 'mute' ? 1 : 2,
+      type: e.type === 'ban' ? 0 : e.type === 'mute' ? 1 : e.type === 'shadowban' ? 2 : 3,
       username: e.targetUsername || '',
       reason: e.reason || '',
       ip: ipDisplay,

@@ -20,6 +20,8 @@ export const Action = Object.freeze({
   // Moderation — room-scoped
   MOD_MUTE:         'mod_mute',         // TRUSTED+
   MOD_UNMUTE:       'mod_unmute',       // TRUSTED+
+  MOD_SILENCE:      'mod_silence',      // TRUSTED+ — chat-only mute
+  MOD_UNSILENCE:    'mod_unsilence',    // TRUSTED+
   MOD_UPDATE:       'mod_update_reason',// TRUSTED+
   MOD_UPDATE_DURATION: 'mod_update_duration', // TRUSTED+ (also rank-checked against the original issuer)
   MOD_KICK:         'mod_kick',         // MOD+
@@ -29,6 +31,7 @@ export const Action = Object.freeze({
   MOD_UNSHADOWBAN:  'mod_unshadowban',  // HOLY+
   MOD_WIPE:         'mod_wipe',         // MOD+
   MOD_LIST:         'mod_list',         // MOD+
+  MOD_DELETE_MSG:   'mod_delete_msg',   // MOD+ — delete a chat message for everyone
 
   // Room management
   ROOM_UPDATE:      'room_update',      // ADMIN+ (or room owner, checked separately)
@@ -51,6 +54,8 @@ const ACTION_MIN_ROLE = Object.freeze({
 
   [Action.MOD_MUTE]:       Role.TRUSTED, // 2
   [Action.MOD_UNMUTE]:     Role.TRUSTED, // 2
+  [Action.MOD_SILENCE]:    Role.TRUSTED, // 2
+  [Action.MOD_UNSILENCE]:  Role.TRUSTED, // 2
   [Action.MOD_UPDATE]:     Role.TRUSTED, // 2
   [Action.MOD_UPDATE_DURATION]: Role.TRUSTED, // 2
   [Action.MOD_KICK]:       Role.MOD,     // 4
@@ -60,6 +65,7 @@ const ACTION_MIN_ROLE = Object.freeze({
   [Action.MOD_UNSHADOWBAN]:Role.HOLY,    // 8
   [Action.MOD_WIPE]:       Role.MOD,     // 4
   [Action.MOD_LIST]:       Role.MOD,     // 4
+  [Action.MOD_DELETE_MSG]: Role.MOD,     // 4
 
   [Action.ROOM_UPDATE]:    Role.ADMIN,   // 5
   [Action.ROOM_ROLE_SET]:  Role.ADMIN,   // 5 (also allowed for room owner, checked separately)
@@ -71,10 +77,13 @@ const ACTION_MIN_ROLE = Object.freeze({
 const GLOBAL_ACTION_MIN_ROLE = Object.freeze({
   [Action.MOD_MUTE]:        Role.NOBLE,
   [Action.MOD_UNMUTE]:      Role.NOBLE,
+  [Action.MOD_SILENCE]:     Role.NOBLE,
+  [Action.MOD_UNSILENCE]:   Role.NOBLE,
   [Action.MOD_UPDATE]:      Role.NOBLE,
   [Action.MOD_UPDATE_DURATION]: Role.NOBLE,
   [Action.MOD_KICK]:        Role.NOBLE,
   [Action.MOD_WIPE]:        Role.NOBLE,
+  [Action.MOD_DELETE_MSG]:  Role.NOBLE,
 
   [Action.CLEAR_CANVAS]:    Role.HOLY,
   [Action.TOGGLE_MIRROR]:   Role.HOLY,

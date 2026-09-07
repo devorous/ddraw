@@ -87,6 +87,7 @@
     onDM = null,
     onSendImage = null,
     onReact = null,
+    onDeleteMessage = null,
     onPopout = null,
     isPopout = false
   } = $props();
@@ -1998,6 +1999,99 @@
     applyReactionLocally(payload);
   }
 
+  function removeMessageFromList(list, messageId) {
+    const index = list.findIndex((entry) => entry.id === messageId);
+    if (index === -1) return null;
+    return [...list.slice(0, index), ...list.slice(index + 1)];
+  }
+
+  export function removeMessage(messageId) {
+    if (!messageId) return;
+
+    const nextAll = removeMessageFromList(messages.all, messageId);
+    if (nextAll) messages.all = nextAll;
+
+    const nextStaff = removeMessageFromList(messages.staff, messageId);
+    if (nextStaff) messages.staff = nextStaff;
+  }
+
+  let spamWarning = $state(null); // { level, cooldownMs, until }
+  let silenced = $state(false);
+  let spamCooldownRemainingMs = $state(0);
+  let spamCooldownTimer = null;
+
+  export function setSilenced(value) {
+    silenced = !!value;
+  }
+
+  function tickSpamCooldown() {
+    if (!spamWarning) return;
+    const remaining = spamWarning.until - Date.now();
+    spamCooldownRemainingMs = Math.max(0, remaining);
+    if (remaining <= 0) {
+      clearInterval(spamCooldownTimer);
+      spamCooldownTimer = null;
+      // Once acknowledged, the card is only showing a countdown — dismiss it
+      // itself once the cooldown clears instead of waiting for another click.
+      if (spamWarning?.acknowledged) spamWarning = null;
+    }
+  }
+
+  export function showSpamWarning(level, cooldownMs) {
+    clearInterval(spamCooldownTimer);
+    spamWarning = { level, cooldownMs, until: Date.now() + (cooldownMs || 0), acknowledged: false };
+    spamCooldownRemainingMs = cooldownMs || 0;
+    if (cooldownMs > 0) {
+      spamCooldownTimer = setInterval(tickSpamCooldown, 250);
+    }
+  }
+
+  function acknowledgeSpamWarning() {
+    if (!spamWarning) return;
+    if (spamWarning.level >= 3) {
+      spamWarning = null;
+      return;
+    }
+    spamWarning = { ...spamWarning, acknowledged: true };
+  }
+
+  let deleteMenu = $state(null); // { msg, x, y, staff }
+  let longPressTimer = null;
+
+  function canDeleteMessages() {
+    return appState.selfRole >= 4; // MOD(4)+
+  }
+
+  function openDeleteMenu(event, msg, isStaffChannel) {
+    if (!canDeleteMessages() || msg.type === 'system') return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = event.touches?.[0] || event;
+    deleteMenu = { msg, x: point.clientX, y: point.clientY, staff: isStaffChannel };
+  }
+
+  function closeDeleteMenu() {
+    deleteMenu = null;
+  }
+
+  function confirmDeleteMessage() {
+    if (!deleteMenu) return;
+    onDeleteMessage?.(deleteMenu.msg.id, deleteMenu.staff);
+    removeMessage(deleteMenu.msg.id);
+    closeDeleteMenu();
+  }
+
+  function startLongPress(event, msg, isStaffChannel) {
+    if (!canDeleteMessages() || msg.type === 'system') return;
+    clearTimeout(longPressTimer);
+    longPressTimer = setTimeout(() => openDeleteMenu(event, msg, isStaffChannel), 500);
+  }
+
+  function cancelLongPress() {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+
   export function openDM(userId, user = null) {
     void openDMThread(userId, user);
   }
@@ -2335,8 +2429,17 @@
   {/if}
 {/snippet}
 
-{#snippet channelRow(msg)}
-  <article class="message-row" class:system={msg.type === 'system'} class:grouped={msg.groupedWithPrevious} class:group-tail={!msg.groupedWithNext}>
+{#snippet channelRow(msg, isStaffChannel = false)}
+  <article
+    class="message-row"
+    class:system={msg.type === 'system'}
+    class:grouped={msg.groupedWithPrevious}
+    class:group-tail={!msg.groupedWithNext}
+    oncontextmenu={(event) => openDeleteMenu(event, msg, isStaffChannel)}
+    ontouchstart={(event) => startLongPress(event, msg, isStaffChannel)}
+    ontouchend={cancelLongPress}
+    ontouchmove={cancelLongPress}
+  >
     <span class="message-time" title={formatTime(msg.timestamp)}>{msg.groupedWithPrevious ? '' : formatTime(msg.timestamp)}</span>
     <!-- Name column. The name is always in the DOM and grouped rows hide it in
          CSS rather than dropping it, so the peek stack — which shows only the
@@ -2406,6 +2509,34 @@
       <img src={expandedImage} alt="Expanded chat upload" class="chat-image-viewer-image" />
     </div>
   </button>
+{/if}
+
+{#if deleteMenu}
+  <div class="delete-msg-backdrop" onclick={closeDeleteMenu} oncontextmenu={(event) => { event.preventDefault(); closeDeleteMenu(); }} role="presentation"></div>
+  <div class="delete-msg-menu" style="left: {deleteMenu.x}px; top: {deleteMenu.y}px;">
+    <button class="delete-msg-btn" onclick={confirmDeleteMessage} type="button" title="Delete message" aria-label="Delete message">
+      <span aria-hidden="true">✕</span> Delete Message
+    </button>
+  </div>
+{/if}
+
+{#if spamWarning}
+  <div class="spam-warning-backdrop" role="presentation">
+    <div class="spam-warning-card">
+      {#if spamWarning.level >= 3}
+        <h3>You've been silenced</h3>
+        <p>You sent messages too quickly too many times, so you can no longer chat until a moderator lifts it.</p>
+        <button class="spam-warning-btn" onclick={acknowledgeSpamWarning} type="button">OK</button>
+      {:else if !spamWarning.acknowledged}
+        <h3>Slow down</h3>
+        <p>You're sending messages too fast. Wait {Math.ceil(spamCooldownRemainingMs / 1000)}s before sending another, or you'll be silenced.</p>
+        <button class="spam-warning-btn" onclick={acknowledgeSpamWarning} type="button">I understand</button>
+      {:else}
+        <h3>Please wait</h3>
+        <p>{Math.ceil(spamCooldownRemainingMs / 1000)}s remaining before you can send another message.</p>
+      {/if}
+    </div>
+  </div>
 {/if}
 
 {#if visible}
@@ -2620,7 +2751,7 @@
             <div class="message-stream" bind:this={publicMessagesEl} onscroll={(event) => handleMessageScroll('staff', event)} onwheel={markUserScrollActive} ontouchmove={markUserScrollActive}>
               {#if messages.staff.length > 0}
                 {#each groupedStaffMessages as msg (msg.id)}
-                  {@render channelRow(msg)}
+                  {@render channelRow(msg, true)}
                 {/each}
               {/if}
             </div>
@@ -2632,7 +2763,7 @@
                 <div class="message-empty"></div>
               {:else}
                 {#each groupedPublicMessages as msg (msg.id)}
-                  {@render channelRow(msg)}
+                  {@render channelRow(msg, false)}
                 {/each}
               {/if}
             </div>
@@ -2680,14 +2811,14 @@
         </button>
         <button class="composer-tool emoji-tool" onclick={openEmojiPicker} disabled={activeView === 'directory'} title="Add emoji" type="button">{COMPOSER_EMOJIS[0]}</button>
         <div class="chat-input-wrap">
-          <textarea class="chat-input" bind:this={composerInputEl} bind:value={messageInput} onkeydown={handleKeydown} onkeyup={syncMentionSuggestion} onclick={syncMentionSuggestion} oninput={syncMentionSuggestion} placeholder={activeView === 'dm' && recipient ? `Message ${recipient.username}...` : activeView === 'directory' ? 'Select someone to start a DM...' : 'Type something...'} rows="1" disabled={activeView === 'directory'}></textarea>
+          <textarea class="chat-input" bind:this={composerInputEl} bind:value={messageInput} onkeydown={handleKeydown} onkeyup={syncMentionSuggestion} onclick={syncMentionSuggestion} oninput={syncMentionSuggestion} placeholder={silenced ? 'You are silenced...' : spamCooldownRemainingMs > 0 ? `Wait ${Math.ceil(spamCooldownRemainingMs / 1000)}s...` : activeView === 'dm' && recipient ? `Message ${recipient.username}...` : activeView === 'directory' ? 'Select someone to start a DM...' : 'Type something...'} rows="1" disabled={activeView === 'directory' || silenced || spamCooldownRemainingMs > 0}></textarea>
           {#if mentionSuggestion}
             <div class="mention-suggestion" aria-live="polite">
               @{mentionSuggestion.username}
             </div>
           {/if}
         </div>
-        <button class="chat-send" onclick={handleSend} disabled={activeView === 'directory'} type="button" aria-label="Send" title="Send"><img class="chat-send-icon" src="/images/send-arrow.svg" alt="" /></button>
+        <button class="chat-send" onclick={handleSend} disabled={activeView === 'directory' || silenced || spamCooldownRemainingMs > 0} type="button" aria-label="Send" title="Send"><img class="chat-send-icon" src="/images/send-arrow.svg" alt="" /></button>
       </div>
     </footer>
     {#if !isPopout}
@@ -5518,6 +5649,86 @@
     max-height: min(84vh, 820px);
     border-radius: 12px;
     object-fit: contain;
+  }
+
+  .delete-msg-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1530;
+    background: transparent;
+    border: 0;
+    cursor: default;
+  }
+
+  .delete-msg-menu {
+    position: fixed;
+    z-index: 1531;
+    transform: translate(-50%, 8px);
+    background: color-mix(in srgb, var(--bg-secondary) 96%, black);
+    border: 1px solid color-mix(in srgb, white 12%, transparent);
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    padding: 4px;
+  }
+
+  .delete-msg-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    color: #ff8a80;
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .delete-msg-btn:hover {
+    background: rgba(239, 68, 68, 0.16);
+  }
+
+  .spam-warning-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1540;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.55);
+  }
+
+  .spam-warning-card {
+    max-width: min(90vw, 340px);
+    padding: 20px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bg-secondary) 96%, black);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
+    text-align: center;
+  }
+
+  .spam-warning-card h3 {
+    margin: 0 0 8px;
+    font-size: 15px;
+    color: var(--text-primary);
+  }
+
+  .spam-warning-card p {
+    margin: 0 0 14px;
+    font-size: 13px;
+    color: color-mix(in srgb, var(--text-primary) 78%, transparent);
+    line-height: 1.4;
+  }
+
+  .spam-warning-btn {
+    padding: 8px 20px;
+    border-radius: 8px;
+    border: 0;
+    background: var(--accent-primary);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
   }
 
   :global(.chat-link) {

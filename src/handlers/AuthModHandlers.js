@@ -107,7 +107,7 @@ export function setupAuthModHandlers(wsClient, app) {
       return;
     }
 
-    const actionNames = ['kicked', 'muted', 'banned', 'unmuted', 'unbanned'];
+    const actionNames = ['kicked', 'muted', 'banned', 'unmuted', 'unbanned', '', '', '', '', 'silenced', 'unsilenced'];
     const actionName = actionNames[data.actionType] || 'moderated';
     const message = `${targetLabel} was ${actionName} by ${issuerLabel}`;
     app.svelteComponents?.chat?.addSystemMessage(message);
@@ -145,6 +145,30 @@ export function setupAuthModHandlers(wsClient, app) {
         ui.setSelfUserMuted?.(false);
         app._updateBlurCannotDraw();
         ui.showToast('You have been unmuted', 3000);
+      }
+    } else if (data.actionType === 9) {
+      // Silenced (chat-only)
+      const targetUser = users.get(data.targetSessionIndex);
+      if (targetUser) targetUser.isSilenced = true;
+
+      if (data.targetSessionIndex === app.sessionIndex) {
+        app.self.isSilenced = true;
+        app.svelteComponents?.chat?.setSilenced(true);
+        ui.showToast(`You have been silenced${data.reason ? ': ' + data.reason : ''}`, 5000);
+      }
+    } else if (data.actionType === 10) {
+      // Unsilenced
+      for (const [, u] of users) {
+        if (u.username === data.targetName || u.registeredName === data.targetName) {
+          u.isSilenced = false;
+          break;
+        }
+      }
+
+      if (data.targetSessionIndex === app.sessionIndex || data.targetName === app.self.username) {
+        app.self.isSilenced = false;
+        app.svelteComponents?.chat?.setSilenced(false);
+        ui.showToast('You have been unsilenced', 3000);
       }
     }
 

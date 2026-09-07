@@ -96,6 +96,10 @@ export class Moderation {
     return this.localRole >= 2;  // TRUSTED(2)+
   }
 
+  canSilence() {
+    return this.localRole >= 2;  // TRUSTED(2)+
+  }
+
   canKickBanOrWipe() {
     return this.localRole >= 4;  // MOD(4)+
   }
@@ -107,6 +111,8 @@ export class Moderation {
     switch (action) {
       case 'mute':
         return this.canMute() && outranks;
+      case 'silence':
+        return this.canSilence() && outranks;
       case 'kick':
       case 'ban':
       case 'wipe':
@@ -299,6 +305,7 @@ export class Moderation {
           <button class="modChip active" data-filter="all">All</button>
           <button class="modChip" data-filter="bans">Bans</button>
           <button class="modChip" data-filter="mutes">Mutes</button>
+          <button class="modChip" data-filter="silences">Silences</button>
           <button class="modChip holyOrDeityOnly" data-filter="shadowbans">Shadow</button>
         </div>
         <div id="modEntryList" class="modEntryList">
@@ -359,6 +366,11 @@ export class Moderation {
     const muteBtn = menu.querySelector('[data-action="mute"]');
     if (muteBtn && targetUser && this.canMute()) {
       muteBtn.textContent = targetUser.isMuted ? 'Unmute' : 'Mute';
+    }
+
+    const silenceBtn = menu.querySelector('[data-action="silence"]');
+    if (silenceBtn && targetUser && this.canSilence()) {
+      silenceBtn.textContent = targetUser.isSilenced ? 'Unsilence' : 'Silence';
     }
 
     menu.querySelectorAll('.menuItem').forEach(item => {
@@ -535,6 +547,20 @@ export class Moderation {
         } else {
           // Mutes defer until the mod confirms duration + reason in the card.
           this.showReasonCard('mute', sessionIndex, targetName, false, ipHash, {
+            deferred: true,
+            targetUsername,
+            anchorRect
+          });
+        }
+        break;
+      case 'silence':
+        if (user?.isSilenced && !ipHash) {
+          // Unsilence immediately
+          if (this.onModAction) this.onModAction(10, sessionIndex, '', 0);
+        } else if (isGroup) {
+          return;
+        } else {
+          this.showReasonCard('silence', sessionIndex, targetName, false, ipHash, {
             deferred: true,
             targetUsername,
             anchorRect
@@ -800,7 +826,7 @@ export class Moderation {
     { label: 'Permanent', minutes: 0 }
   ];
 
-  static DEFAULT_DURATION_MINUTES = { mute: 10, ban: 1440, shadowban: 2880 };
+  static DEFAULT_DURATION_MINUTES = { mute: 10, ban: 1440, shadowban: 2880, silence: 10 };
 
   /**
    * Show a small non-blocking card.
@@ -828,13 +854,13 @@ export class Moderation {
     const existing = document.getElementById('modReasonCard');
     if (existing) existing.remove();
 
-    const actionCodes = { kick: 0, mute: 1, ban: 2, shadowban: 6 };
+    const actionCodes = { kick: 0, mute: 1, ban: 2, shadowban: 6, silence: 9 };
     const actionCode = actionCodes[action];
     const isDanger = action === 'ban' || action === 'shadowban';
-    const pastTense = { kick: 'Kicked', mute: 'Muted', ban: 'Banned', shadowban: 'Shadow Banned' };
-    const futureTense = { mute: 'Mute', ban: 'Ban', shadowban: 'Shadow Ban' };
+    const pastTense = { kick: 'Kicked', mute: 'Muted', ban: 'Banned', shadowban: 'Shadow Banned', silence: 'Silenced' };
+    const futureTense = { mute: 'Mute', ban: 'Ban', shadowban: 'Shadow Ban', silence: 'Silence' };
     const deferred = !!opts.deferred;
-    const hasDuration = action === 'mute' || action === 'ban' || action === 'shadowban';
+    const hasDuration = action === 'mute' || action === 'ban' || action === 'shadowban' || action === 'silence';
     const hasScope = action === 'ban' || action === 'shadowban';
     const titlePrefix = deferred ? '' : '✓ ';
     const titleVerb = deferred ? (futureTense[action] || action) : (pastTense[action] || action);
@@ -1046,7 +1072,7 @@ export class Moderation {
   updateModEntries(entries) {
     this.modEntries = (entries || []).map(e => ({
       id: e.id,
-      type: e.type === 0 ? 'bans' : e.type === 1 ? 'mutes' : 'shadowbans',
+      type: e.type === 0 ? 'bans' : e.type === 1 ? 'mutes' : e.type === 2 ? 'shadowbans' : 'silences',
       username: e.username || '',
       reason: e.reason || '',
       ip: e.ip || '',
@@ -1090,7 +1116,7 @@ export class Moderation {
     }
 
     const now = Date.now();
-    const pillFor = { bans: 'BAN', mutes: 'MUTE', shadowbans: 'SHADOW' };
+    const pillFor = { bans: 'BAN', mutes: 'MUTE', shadowbans: 'SHADOW', silences: 'SILENCE' };
 
     const rowsHtml = filtered.map(entry => {
       const createdDate = entry.createdAt
