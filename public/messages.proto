@@ -303,7 +303,7 @@ message Msg {
   bool auth_supporter = 199;           // AUTH_RESULT: whether the account has an active supporter subscription
 
   // === Moderation Fields (34-42) ===
-  uint32 mod_action_type  = 34;  // 0=kick, 1=mute, 2=ban, 3=unmute, 4=unban
+  uint32 mod_action_type  = 34;  // 0=kick, 1=mute, 2=ban, 3=unmute, 4=unban, 5=updateReason, 6=shadowban, 7=unshadowban, 8=updateDuration
   uint32 mod_target       = 35;  // Target session index
   string mod_reason       = 36;  // Reason for action
   uint32 mod_duration     = 37;  // Duration in minutes (0=permanent)
@@ -326,6 +326,7 @@ message Msg {
     bool   active    = 9;
     string roomId    = 10;  // Room this entry applies to (empty = global)
     string ipScope   = 11;  // CIDR scope this ban targets (e.g. "/64", "/24", "/128")
+    uint32 issuedByRole = 12; // Room/global authority of the issuer at issue time; gates who may revoke/edit
   }
   repeated ModEntry mod_entries = 42;  // List of active moderation entries
 

@@ -29,7 +29,7 @@ import { hashPassword, verifyPassword, generateToken, verifyToken } from './auth
 import { getUserFromToken } from './authUser.js';
 import { isSupporterActive } from './supporter.js';
 import { handleCreateCheckoutSession, handleCreatePortalSession, handleStripeWebhook, setSupporterChangeNotifier } from './stripeRoutes.js';
-import { issueModAction, revokeModAction, revokeMatchingModActions, updateModActionReason, getModEntries, obfuscateIp, checkBan, checkMute, checkShadowBan } from './moderation.js';
+import { issueModAction, revokeModAction, revokeMatchingModActions, updateModActionReason, updateModActionDuration, getModActionById, getModEntries, obfuscateIp, checkBan, checkMute, checkShadowBan } from './moderation.js';
 import { ENABLE_SERVER_REPLAY_DB } from './replayConfig.js';
 import { T, Tool, ToolNames, ToolToEnum } from '../shared/MessageTypes.js';
 import { isCommitType, COMMIT_KIND } from '../shared/StrokeFingerprint.js';
@@ -4197,7 +4197,8 @@ wss.on('connection', async (ws, req) => {
             Action.MOD_UNBAN,
             Action.MOD_UPDATE,
             Action.MOD_SHADOWBAN,
-            Action.MOD_UNSHADOWBAN
+            Action.MOD_UNSHADOWBAN,
+            Action.MOD_UPDATE_DURATION
           ];
           const requiredAction = MOD_ACTION_MAP[modActionType];
           if (!requiredAction || !authorize(ws, requiredAction, sendTo, T.MOD_RESULT)) {
@@ -4234,7 +4235,13 @@ wss.on('connection', async (ws, req) => {
           const targetDeviceId = targetWs?.deviceId || recentTarget?.deviceId || null;
           const targetFingerprintId = targetWs?.fingerprintId || recentTarget?.fingerprintId || null;
 
+          // Several cases below reject via rejectProtectedTarget() and `break` out of
+          // the switch, which otherwise falls straight into the unconditional success
+          // MOD_RESULT after it — sending a false result immediately followed by a
+          // true one, with the client acting on whichever arrives (last write wins).
+          let resultSent = false;
           const rejectProtectedTarget = (message) => {
+            resultSent = true;
             sendTo(ws, { t: T.MOD_RESULT, a: false, authError: message });
           };
 
@@ -4315,6 +4322,7 @@ wss.on('connection', async (ws, req) => {
                     reason: modReason,
                     issuedBy: ws.userId || null,
                     issuedByUsername: ws.username || '',
+                    issuedByRole: issuerAuthority,
                     duration: modDuration,
                     roomId: isGlobalMute ? null : room.id
                   });
@@ -4347,10 +4355,12 @@ wss.on('connection', async (ws, req) => {
                 }
                 // Ban immunity: HOLY(7)+ can't be room-banned; room owner can't be banned from own room
                 if (targetWs?.globalRole >= Role.HOLY) {
+                  resultSent = true;
                   sendTo(ws, { t: T.MOD_RESULT, a: false, authError: 'Cannot ban users with global HOLY+ rank' });
                   break;
                 }
                 if (room.ownerId && targetWs?.userId === room.ownerId) {
+                  resultSent = true;
                   sendTo(ws, { t: T.MOD_RESULT, a: false, authError: 'Cannot ban the room owner' });
                   break;
                 }
@@ -4365,6 +4375,7 @@ wss.on('connection', async (ws, req) => {
                     reason: modReason,
                     issuedBy: ws.userId || null,
                     issuedByUsername: ws.username || '',
+                    issuedByRole: issuerAuthority,
                     duration: modDuration,
                     roomId: isGlobalBan ? null : room.id
                   });
@@ -4383,13 +4394,20 @@ wss.on('connection', async (ws, req) => {
                 break;
               }
 
-              case 3: // Unmute
+              case 3: { // Unmute
+                let rankBlocked = false;
                 if (getDB()) {
                   const revokeEntryId = (data.modReason || '').trim();
                   const hasSpecificEntryId = /^[a-f0-9]{24}$/i.test(revokeEntryId);
 
                   if (hasSpecificEntryId) {
-                    await revokeModAction(revokeEntryId, ws.userId);
+                    const entry = await getModActionById(revokeEntryId);
+                    if (entry && (entry.issuedByRole || 0) > issuerAuthority) {
+                      rejectProtectedTarget('Cannot unmute a user muted by a higher-ranked moderator');
+                      rankBlocked = true;
+                    } else {
+                      await revokeModAction(revokeEntryId, ws.userId);
+                    }
                   } else {
                     await revokeMatchingModActions({
                       type: 'mute',
@@ -4397,10 +4415,12 @@ wss.on('connection', async (ws, req) => {
                       targetIp,
                       targetUsername: targetName || null,
                       roomId: room.id,
-                      revokedById: ws.userId
+                      revokedById: ws.userId,
+                      maxIssuedByRole: issuerAuthority
                     });
                   }
                 }
+                if (rankBlocked) break;
 
                 let stillMuted = false;
                 if (targetWs) {
@@ -4426,6 +4446,7 @@ wss.on('connection', async (ws, req) => {
                   modReason: modReason
                 });
                 break;
+              }
 
               case 5: { // Update reason for an existing kick/mute/ban
                 // modDuration is repurposed here to carry the original action code (0=kick,1=mute,2=ban)
@@ -4452,13 +4473,20 @@ wss.on('connection', async (ws, req) => {
                 break;
               }
 
-              case 4: // Unban
+              case 4: { // Unban
+                let rankBlocked = false;
                 if (getDB()) {
                   const revokeEntryId = (data.modReason || '').trim();
                   const hasSpecificEntryId = /^[a-f0-9]{24}$/i.test(revokeEntryId);
 
                   if (hasSpecificEntryId) {
-                    await revokeModAction(revokeEntryId, ws.userId);
+                    const entry = await getModActionById(revokeEntryId);
+                    if (entry && (entry.issuedByRole || 0) > issuerAuthority) {
+                      rejectProtectedTarget('Cannot unban a user banned by a higher-ranked moderator');
+                      rankBlocked = true;
+                    } else {
+                      await revokeModAction(revokeEntryId, ws.userId);
+                    }
                   } else {
                     await revokeMatchingModActions({
                       type: 'ban',
@@ -4466,10 +4494,12 @@ wss.on('connection', async (ws, req) => {
                       targetIp,
                       targetUsername: targetName || null,
                       roomId: room.id,
-                      revokedById: ws.userId
+                      revokedById: ws.userId,
+                      maxIssuedByRole: issuerAuthority
                     });
                   }
                 }
+                if (rankBlocked) break;
                 roomBroadcaster({
                   t: T.MOD_NOTIFY,
                   modActionType: 4,
@@ -4479,6 +4509,7 @@ wss.on('connection', async (ws, req) => {
                   modReason: modReason
                 });
                 break;
+              }
 
               case 6: { // Shadow ban
                 if (targetRole >= Role.MOD) {
@@ -4490,6 +4521,7 @@ wss.on('connection', async (ws, req) => {
                   break;
                 }
                 if (!targetWs) {
+                  resultSent = true;
                   sendTo(ws, { t: T.MOD_RESULT, a: false, authError: 'Target user is no longer connected' });
                   break;
                 }
@@ -4505,6 +4537,7 @@ wss.on('connection', async (ws, req) => {
                     reason: modReason,
                     issuedBy: ws.userId || null,
                     issuedByUsername: ws.username || '',
+                    issuedByRole: issuerAuthority,
                     duration: modDuration,
                     roomId: null
                   });
@@ -4517,12 +4550,19 @@ wss.on('connection', async (ws, req) => {
               }
 
               case 7: { // Unshadow ban
+                let rankBlocked = false;
                 if (getDB()) {
                   const revokeEntryId = (data.modReason || '').trim();
                   const hasSpecificEntryId = /^[a-f0-9]{24}$/i.test(revokeEntryId);
 
                   if (hasSpecificEntryId) {
-                    await revokeModAction(revokeEntryId, ws.userId);
+                    const entry = await getModActionById(revokeEntryId);
+                    if (entry && (entry.issuedByRole || 0) > issuerAuthority) {
+                      rejectProtectedTarget('Cannot unshadowban a user shadow banned by a higher-ranked moderator');
+                      rankBlocked = true;
+                    } else {
+                      await revokeModAction(revokeEntryId, ws.userId);
+                    }
                   } else {
                     await revokeMatchingModActions({
                       type: 'shadowban',
@@ -4531,10 +4571,12 @@ wss.on('connection', async (ws, req) => {
                       targetUsername: targetName || null,
                       targetDeviceId,
                       targetFingerprintId,
-                      revokedById: ws.userId
+                      revokedById: ws.userId,
+                      maxIssuedByRole: issuerAuthority
                     });
                   }
                 }
+                if (rankBlocked) break;
 
                 let stillShadowBanned = false;
                 if (targetWs) {
@@ -4557,9 +4599,36 @@ wss.on('connection', async (ws, req) => {
                 }
                 break;
               }
+
+              case 8: { // Update duration of an existing mute/ban/shadowban
+                const revokeEntryId = (data.modReason || '').trim();
+                if (!getDB() || !/^[a-f0-9]{24}$/i.test(revokeEntryId)) {
+                  rejectProtectedTarget('Invalid moderation entry');
+                  break;
+                }
+                const entry = await getModActionById(revokeEntryId);
+                if (!entry) {
+                  rejectProtectedTarget('Moderation entry not found');
+                  break;
+                }
+                if ((entry.issuedByRole || 0) > issuerAuthority) {
+                  rejectProtectedTarget('Cannot change the duration of an entry issued by a higher-ranked moderator');
+                  break;
+                }
+                await updateModActionDuration(revokeEntryId, modDuration, ws.userId);
+                roomBroadcaster({
+                  t: T.MOD_NOTIFY,
+                  modActionType: 5,
+                  modTarget: modTargetIndex,
+                  modTargetName: entry.targetUsername || targetName,
+                  modIssuerName: ws.username || `User ${ws.sessionIndex}`,
+                  modReason: ''
+                });
+                break;
+              }
             }
 
-            sendTo(ws, { t: T.MOD_RESULT, a: true });
+            if (!resultSent) sendTo(ws, { t: T.MOD_RESULT, a: true });
           } catch (err) {
             console.error('[Mod] Action error:', err);
             sendTo(ws, { t: T.MOD_RESULT, a: false, authError: 'Moderation action failed' });

@@ -769,7 +769,20 @@ export class DrawingApp {
     };
     this.moderation.onRevokeEntry = (entryId, entryType, username) => {
       const revokeType = entryType === 'mutes' ? 3 : entryType === 'shadowbans' ? 7 : 4;
-      this.wsClient.sendModRevoke(revokeType, entryId, username);
+      // The moderation entry has no live session index of its own — resolve one
+      // from the currently connected users so the server can clear the target's
+      // in-memory muted/shadowbanned flag right away, not just the DB record.
+      let sessionIndex;
+      for (const [idx, u] of this.users) {
+        if (u.username === username || u.registeredName === username) {
+          sessionIndex = idx;
+          break;
+        }
+      }
+      this.wsClient.sendModRevoke(revokeType, entryId, username, sessionIndex);
+    };
+    this.moderation.onModUpdateDuration = (entryId, minutes) => {
+      this.wsClient.sendModUpdateDuration(entryId, minutes);
     };
     this.moderation.onModWipe = (sessionIndex, targetName) => {
       this.wsClient.sendModWipe(sessionIndex, targetName);

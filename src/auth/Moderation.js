@@ -37,6 +37,7 @@ export class Moderation {
     this.onModGroupUpdateReason = null; // (action, ipHash, reason)
     this.onRequestModList = null;    // ({ showHistory, search })
     this.onRevokeEntry = null;       // (entryId, type)
+    this.onModUpdateDuration = null; // (entryId, minutes)
     this.onModWipe = null;           // (sessionIndex, targetName)
     this.onClear = null;             // ()
     this.onRoomRoleSet = null;       // (targetUserId, role)
@@ -274,7 +275,7 @@ export class Moderation {
       bansBtn.className = 'btn modOnly';
       bansBtn.id = 'bansBtn';
       bansBtn.title = 'Bans & Mutes';
-      bansBtn.textContent = 'Bans';
+      bansBtn.textContent = 'Mod';
       bansBtn.addEventListener('click', () => this.togglePanel());
       roomSettingsBtn.parentNode.insertBefore(bansBtn, roomSettingsBtn);
     }
@@ -1051,6 +1052,7 @@ export class Moderation {
       ip: e.ip || '',
       ipScope: e.ipScope || '',
       issuedBy: e.issuedBy || '',
+      issuedByRole: e.issuedByRole || 0,
       createdAt: e.createdAt || 0,
       expiresAt: e.expiresAt || 0,
       active: e.active
@@ -1103,6 +1105,10 @@ export class Moderation {
       const statusClass = !entry.active ? 'revoked' : isExpired ? 'expired' : 'active';
 
       const canRemove = entry.active && !isExpired;
+      // A mod can never lift or edit an action issued by someone who outranked
+      // them at the time — server enforces this too; hiding the controls here
+      // just avoids offering an action that will bounce.
+      const canOverride = this.localRole >= (entry.issuedByRole || 0);
       const pillLabel = pillFor[entry.type] || entry.type.toUpperCase();
       const pillClass = `modEntryPill modEntryPill-${entry.type}`;
       const scopeBadge = entry.ipScope
@@ -1112,6 +1118,7 @@ export class Moderation {
       const ipLine = entry.ip
         ? `<div class="modTableSub modEntryIp">${this.escapeHtml(entry.ip)}${scopeBadge ? ' ' : ''}${scopeBadge}</div>`
         : '';
+      const canEditDuration = canRemove && canOverride;
 
       return `
         <tr class="modTableRow ${statusClass}">
@@ -1128,9 +1135,12 @@ export class Moderation {
             <div>${this.escapeHtml(entry.issuedBy || 'Unknown')}</div>
             <div class="modTableSub">${createdDate}</div>
           </td>
-          <td>${expiresDate}</td>
+          <td class="modEntryExpires" data-id="${this.escapeHtml(entry.id)}" data-expires="${entry.expiresAt || 0}">
+            <span class="modEntryExpiresText">${expiresDate}</span>
+            ${canEditDuration ? `<button class="modEntryEditDuration" data-id="${this.escapeHtml(entry.id)}" title="Change duration">✎</button>` : ''}
+          </td>
           <td class="modTableActions">
-            ${canRemove ? `<button class="modEntryRemove" data-id="${this.escapeHtml(entry.id)}" data-type="${entry.type}" data-username="${this.escapeHtml(entry.username)}">Revoke</button>` : ''}
+            ${canRemove && canOverride ? `<button class="modEntryRemove" data-id="${this.escapeHtml(entry.id)}" data-type="${entry.type}" data-username="${this.escapeHtml(entry.username)}">Revoke</button>` : ''}
           </td>
         </tr>
       `;
@@ -1155,6 +1165,57 @@ export class Moderation {
         }
       });
     });
+
+    // Wire up inline duration editing
+    list.querySelectorAll('.modEntryEditDuration').forEach(btn => {
+      btn.addEventListener('click', () => this._showDurationEditor(btn.closest('.modEntryExpires'), btn.dataset.id));
+    });
+  }
+
+  /**
+   * Swaps an Expires cell's text for a duration <select>, defaulting to the
+   * closest existing option to the entry's current expiry. Selecting a new
+   * value fires onModUpdateDuration and reverts the cell — the real value
+   * comes back on the next list refresh.
+   */
+  _showDurationEditor(cell, entryId) {
+    if (!cell || cell.querySelector('select')) return;
+
+    const expiresAt = Number(cell.dataset.expires) || 0;
+    const remainingMinutes = expiresAt ? Math.max(0, Math.round((expiresAt - Date.now()) / 60000)) : 0;
+    let closest = Moderation.DURATION_OPTIONS[0];
+    if (expiresAt) {
+      closest = Moderation.DURATION_OPTIONS.reduce((best, opt) => {
+        if (opt.minutes === 0) return best;
+        return Math.abs(opt.minutes - remainingMinutes) < Math.abs(best.minutes - remainingMinutes) ? opt : best;
+      }, Moderation.DURATION_OPTIONS[0]);
+    } else {
+      closest = Moderation.DURATION_OPTIONS[Moderation.DURATION_OPTIONS.length - 1]; // Permanent
+    }
+
+    const select = document.createElement('select');
+    select.className = 'modEntryDurationSelect';
+    select.innerHTML = Moderation.DURATION_OPTIONS.map(o =>
+      `<option value="${o.minutes}"${o.minutes === closest.minutes ? ' selected' : ''}>${o.label}</option>`
+    ).join('');
+
+    select.addEventListener('click', (e) => e.stopPropagation());
+    select.addEventListener('keydown', (e) => e.stopPropagation());
+    select.addEventListener('change', () => {
+      const minutes = parseInt(select.value, 10) || 0;
+      if (this.onModUpdateDuration) this.onModUpdateDuration(entryId, minutes);
+      cell.querySelector('.modEntryExpiresText')?.style.removeProperty('display');
+      select.remove();
+    });
+    select.addEventListener('blur', () => {
+      cell.querySelector('.modEntryExpiresText')?.style.removeProperty('display');
+      select.remove();
+    });
+
+    const textEl = cell.querySelector('.modEntryExpiresText');
+    if (textEl) textEl.style.display = 'none';
+    cell.appendChild(select);
+    select.focus();
   }
 
   escapeHtml(str) {

@@ -1775,7 +1775,9 @@ export class WebSocketClient {
             username: e.username,
             reason: e.reason,
             ip: e.ip,
+            ipScope: e.ipScope,
             issuedBy: e.issuedBy,
+            issuedByRole: e.issuedByRole,
             createdAt: e.createdAt,
             expiresAt: e.expiresAt,
             active: e.active
@@ -2950,17 +2952,41 @@ export class WebSocketClient {
   /**
    * Sends a revoke request for an existing moderation entry.
    * `modReason` is repurposed here to carry the entry id for revoke actions.
-   * @param {number} actionType - 3=unmute, 4=unban
+   * @param {number} actionType - 3=unmute, 4=unban, 7=unshadowban
    * @param {string} entryId - Moderation entry id to revoke
    * @param {string} [targetName] - Target username for UI notifications/fallback lookup
+   * @param {number} [targetSessionIndex] - Live session index, when known, so the
+   *   server can clear the target's in-memory muted/shadowbanned flag immediately
+   *   instead of relying solely on the (async) DB state.
    * @returns {void}
    */
-  sendModRevoke(actionType, entryId, targetName = '') {
-    this.send({
+  sendModRevoke(actionType, entryId, targetName = '', targetSessionIndex) {
+    const payload = {
       t: T.MOD_ACTION,
       modActionType: actionType,
       modTargetName: targetName || '',
       modReason: entryId || ''
+    };
+    if (targetSessionIndex !== undefined && targetSessionIndex !== null) {
+      payload.modTarget = targetSessionIndex;
+    }
+    this.send(payload);
+  }
+
+  /**
+   * Sends a request to change the duration/expiry of an existing moderation entry.
+   * `modReason` is repurposed to carry the entry id; `modDuration` carries the new
+   * duration in minutes (0 = permanent).
+   * @param {string} entryId - Moderation entry id to update
+   * @param {number} minutes - New duration in minutes (0 = permanent)
+   * @returns {void}
+   */
+  sendModUpdateDuration(entryId, minutes) {
+    this.send({
+      t: T.MOD_ACTION,
+      modActionType: 8,
+      modReason: entryId || '',
+      modDuration: minutes || 0
     });
   }
 

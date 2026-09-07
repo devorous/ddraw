@@ -168,6 +168,9 @@ export async function checkShadowBan({
  * @param {string} opts.reason
  * @param {string} opts.issuedBy
  * @param {string} opts.issuedByUsername
+ * @param {number} [opts.issuedByRole=0] - Issuer's moderation authority at issue time (see
+ *   getModerationAuthority in server/index.js). Stored so a later revoke/edit can be
+ *   restricted to moderators who outrank (or match) whoever issued the action.
  * @param {number} opts.duration - Minutes (0 = permanent).
  * @param {string} [opts.roomId]
  * @returns {Promise<Object|null>}
@@ -206,6 +209,7 @@ export async function issueModAction(opts) {
     reason: opts.reason || '',
     issuedBy: opts.issuedBy,
     issuedByUsername: opts.issuedByUsername,
+    issuedByRole: opts.issuedByRole || 0,
     roomId: opts.roomId || null,
     createdAt: now,
     expiresAt,
@@ -243,6 +247,25 @@ export async function updateModActionReason(targetUserId, targetIp, type, reason
 }
 
 /**
+ * Fetches a single moderation entry by its DB id.
+ * @param {string} actionId
+ * @returns {Promise<Object|null>}
+ */
+export async function getModActionById(actionId) {
+  const db = getDB();
+  if (!db) return null;
+
+  const { ObjectId } = await import('mongodb');
+  let objectId;
+  try {
+    objectId = new ObjectId(actionId);
+  } catch (_) {
+    return null;
+  }
+  return db.collection('moderation').findOne({ _id: objectId });
+}
+
+/**
  * Revokes an existing moderation action.
  * @param {string} actionId - The ID of the moderation action to revoke.
  * @param {string} revokedById - The ID of the moderator revoking the action.
@@ -262,6 +285,29 @@ export async function revokeModAction(actionId, revokedById) {
 }
 
 /**
+ * Updates the duration/expiry of an existing moderation action.
+ * @param {string} actionId - The ID of the moderation action to update.
+ * @param {number} durationMinutes - New duration in minutes (0 = permanent).
+ * @param {string} updatedById - The ID of the moderator making the change.
+ * @returns {Promise<boolean>} - True if the action was successfully updated.
+ */
+export async function updateModActionDuration(actionId, durationMinutes, updatedById) {
+  const db = getDB();
+  if (!db) return false;
+
+  const { ObjectId } = await import('mongodb');
+  const duration = Math.max(0, Number(durationMinutes) || 0);
+  const expiresAt = duration > 0 ? new Date(Date.now() + duration * 60 * 1000) : null;
+
+  const result = await db.collection('moderation').updateOne(
+    { _id: new ObjectId(actionId) },
+    { $set: { duration, expiresAt, durationUpdatedAt: new Date(), durationUpdatedBy: updatedById } }
+  );
+
+  return result.modifiedCount > 0;
+}
+
+/**
  * Revokes all active moderation actions matching the provided target filters.
  * @param {Object} opts
  * @param {'mute'|'ban'} opts.type
@@ -272,6 +318,9 @@ export async function revokeModAction(actionId, revokedById) {
  * @param {string|null} [opts.targetFingerprintId]
  * @param {string|null} [opts.roomId]
  * @param {string|null} [opts.revokedById]
+ * @param {number} [opts.maxIssuedByRole] - When set, only revokes entries issued by a
+ *   moderator whose authority was at or below this — a lower-ranked mod can never lift a
+ *   higher-ranked mod's action just because both targeted the same user.
  * @returns {Promise<number>} - Number of actions revoked.
  */
 export async function revokeMatchingModActions({
@@ -282,7 +331,8 @@ export async function revokeMatchingModActions({
   targetDeviceId = null,
   targetFingerprintId = null,
   roomId = null,
-  revokedById = null
+  revokedById = null,
+  maxIssuedByRole = null
 }) {
   const db = getDB();
   if (!db) return 0;
@@ -296,15 +346,22 @@ export async function revokeMatchingModActions({
   });
   if (conditions.length === 0) return 0;
 
+  const query = {
+    type,
+    active: true,
+    $and: [
+      { $or: conditions },
+      buildRoomCondition(roomId)
+    ]
+  };
+  if (maxIssuedByRole !== null && maxIssuedByRole !== undefined) {
+    // Rows predating this field carry no issuedByRole at all — treat those as
+    // rank 0 (anyone may revoke) rather than silently excluding them.
+    query.$and.push({ $or: [{ issuedByRole: { $lte: maxIssuedByRole } }, { issuedByRole: { $exists: false } }] });
+  }
+
   const result = await db.collection('moderation').updateMany(
-    {
-      type,
-      active: true,
-      $and: [
-        { $or: conditions },
-        buildRoomCondition(roomId)
-      ]
-    },
+    query,
     {
       $set: {
         active: false,
@@ -370,6 +427,7 @@ export async function getModEntries({ showHistory = false, search = '', roomId =
       ip: ipDisplay,
       ipScope: e.targetIpScope || null,
       issuedBy: e.issuedByUsername || '',
+      issuedByRole: e.issuedByRole || 0,
       createdAt: e.createdAt ? e.createdAt.getTime() : 0,
       expiresAt: e.expiresAt ? e.expiresAt.getTime() : 0,
       active: e.active,
