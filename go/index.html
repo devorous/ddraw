@@ -747,6 +747,7 @@
 
         <!-- Selection Context Menu -->
         <div id="selectionMenu" class="selectionMenu" style="display: none;">
+          <div class="selectionMenuHandle" id="selMenuHandle" title="Drag to move"></div>
           <button class="menuItem" id="selMenuMask" title="Use selection as drawing mask">Mask</button>
           <button class="menuItem" id="selMenuClear" title="Clear selection contents">Clear</button>
           <button class="menuItem" id="selMenuClone" title="Duplicate selection as a floating copy">Clone</button>
@@ -1263,14 +1264,15 @@
                     </label>
                   </div>
                 </div>
-                <div class="selection-mode-container">
-                  <label class="modeLabel">Fit to Content</label>
-                  <div class="radio-group">
-                    <label class="radio-option">
-                      <input type="checkbox" id="selectionFitToContent" checked>
-                      <span>Fit to Content</span>
-                    </label>
-                  </div>
+                <div class="tool-toggle-container">
+                  <label class="tool-toggle">
+                    <span class="tool-toggle-label">Fit to Content</span>
+                    <span class="tool-toggle-track">
+                      <input type="checkbox" id="selectionFitToContent" checked aria-label="Fit to content">
+                      <span class="tool-toggle-thumb"></span>
+                    </span>
+                  </label>
+                  <p class="tool-toggle-hint">Shrink the selection to the drawn content's actual bounds.</p>
                 </div>
                 <div class="tool-toggle-container">
                   <label class="tool-toggle">

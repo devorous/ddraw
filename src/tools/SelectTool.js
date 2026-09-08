@@ -90,6 +90,7 @@ export class SelectTool extends Tool {
 
     // Menu positioning
     this.lastPointerUpPos = null;
+    this._menuUserPositioned = false; // true once the user drags the menu by its handle
 
     // Pattern mode
     this.patternMode = false;
@@ -553,6 +554,7 @@ export class SelectTool extends Tool {
 
     this.menuElements = {
       menu: document.getElementById('selectionMenu'),
+      handle: document.getElementById('selMenuHandle'),
       mask: document.getElementById('selMenuMask'),
       obscure: document.getElementById('selMenuObscure'),
       clear: document.getElementById('selMenuClear'),
@@ -586,6 +588,48 @@ export class SelectTool extends Tool {
     this.menuElements.mergeUp?.addEventListener('click', () => this.mergeUp());
     this.menuElements.mergeDown?.addEventListener('click', () => this.mergeDown());
     this.menuElements.mergeAll?.addEventListener('click', () => this.mergeAll());
+
+    this.setupMenuDrag();
+  }
+
+  /**
+   * Wires up dragging the context menu by its handle bar.
+   */
+  setupMenuDrag() {
+    const handle = this.menuElements.handle;
+    const menu = this.menuElements.menu;
+    if (!handle || !menu) return;
+
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+
+    const onPointerMove = (e) => {
+      const margin = 10;
+      const maxLeft = window.innerWidth - menu.offsetWidth - margin;
+      const maxTop = window.innerHeight - menu.offsetHeight - margin;
+      const left = Math.max(margin, Math.min(e.clientX - dragOffsetX, maxLeft));
+      const top = Math.max(margin, Math.min(e.clientY - dragOffsetY, maxTop));
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+    };
+
+    const onPointerUp = (e) => {
+      handle.releasePointerCapture?.(e.pointerId);
+      handle.removeEventListener('pointermove', onPointerMove);
+      handle.removeEventListener('pointerup', onPointerUp);
+    };
+
+    handle.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = menu.getBoundingClientRect();
+      dragOffsetX = e.clientX - rect.left;
+      dragOffsetY = e.clientY - rect.top;
+      this._menuUserPositioned = true;
+      handle.setPointerCapture?.(e.pointerId);
+      handle.addEventListener('pointermove', onPointerMove);
+      handle.addEventListener('pointerup', onPointerUp);
+    });
   }
 
   /**
@@ -673,46 +717,98 @@ export class SelectTool extends Tool {
     menu.classList.add('grid');
     menu.style.display = '';
 
-    // Skip repositioning if menu was already visible and we're just updating buttons
-    if (skipReposition && wasVisible) return;
+    // Skip repositioning if menu was already visible and we're just updating buttons,
+    // or if the user has manually dragged the menu for this selection.
+    if ((skipReposition && wasVisible) || this._menuUserPositioned) return;
 
-    let canvasX, canvasY;
-
-    if (this.lastPointerUpPos) {
-      canvasX = this.lastPointerUpPos.x;
-      canvasY = this.lastPointerUpPos.y;
+    // Bounding box of the selection, in canvas space
+    let selLeft, selTop, selRight, selBottom;
+    if (this.corners) {
+      const xs = [this.corners.tl.x, this.corners.tr.x, this.corners.bl.x, this.corners.br.x];
+      const ys = [this.corners.tl.y, this.corners.tr.y, this.corners.bl.y, this.corners.br.y];
+      selLeft = Math.min(...xs);
+      selRight = Math.max(...xs);
+      selTop = Math.min(...ys);
+      selBottom = Math.max(...ys);
     } else {
-      const rightX = this.corners
-        ? Math.max(this.corners.tl.x, this.corners.tr.x, this.corners.bl.x, this.corners.br.x)
-        : this.selection.x + this.selection.width;
-      const bottomY = this.corners
-        ? Math.max(this.corners.tl.y, this.corners.tr.y, this.corners.bl.y, this.corners.br.y)
-        : this.selection.y + this.selection.height;
-
-      canvasX = rightX;
-      canvasY = bottomY;
+      selLeft = this.selection.x;
+      selTop = this.selection.y;
+      selRight = this.selection.x + this.selection.width;
+      selBottom = this.selection.y + this.selection.height;
     }
 
     const zoom = this.board.zoom || 1;
     const panX = this.board.panX || 0;
     const panY = this.board.panY || 0;
+    const containerRect = this.board.container.getBoundingClientRect();
+    const toScreenX = (x) => containerRect.left + x * zoom + panX;
+    const toScreenY = (y) => containerRect.top + y * zoom + panY;
 
-    const screenX = canvasX * zoom + panX;
-    const screenY = canvasY * zoom + panY;
+    const sLeft = toScreenX(selLeft);
+    const sTop = toScreenY(selTop);
+    const sRight = toScreenX(selRight);
+    const sBottom = toScreenY(selBottom);
 
     const menuWidth = menu.offsetWidth;
     const menuHeight = menu.offsetHeight;
 
-    const containerRect = this.board.container.getBoundingClientRect();
+    const gap = 10;
+    const edgeMargin = 10;
+    const viewportLeft = edgeMargin;
+    const viewportTop = edgeMargin;
+    const viewportRight = window.innerWidth - edgeMargin;
+    const viewportBottom = window.innerHeight - edgeMargin;
+    const clamp = (v, min, max) => Math.max(min, Math.min(v, max));
 
-    let left = containerRect.left + screenX + 10;
-    let top = containerRect.top + screenY + 10;
+    // Anchor near wherever the pointer was released (falls back to the
+    // selection's bottom-right corner), used only to bias placement along
+    // the axis that runs parallel to the selection's edge.
+    const anchorX = this.lastPointerUpPos ? toScreenX(this.lastPointerUpPos.x) : sRight;
+    const anchorY = this.lastPointerUpPos ? toScreenY(this.lastPointerUpPos.y) : sBottom;
 
-    left = Math.max(10, Math.min(left, window.innerWidth - menuWidth - 10));
-    top = Math.max(10, Math.min(top, window.innerHeight - menuHeight - 10));
+    // Try each side of the selection in turn; a placement is only accepted
+    // if the menu fits entirely within the viewport there, which guarantees
+    // it never overlaps the selection bounds.
+    const placements = [
+      () => { // right of selection
+        const left = sRight + gap;
+        if (left + menuWidth > viewportRight) return null;
+        return { left, top: clamp(anchorY, viewportTop, viewportBottom - menuHeight) };
+      },
+      () => { // left of selection
+        const left = sLeft - gap - menuWidth;
+        if (left < viewportLeft) return null;
+        return { left, top: clamp(anchorY, viewportTop, viewportBottom - menuHeight) };
+      },
+      () => { // below selection
+        const top = sBottom + gap;
+        if (top + menuHeight > viewportBottom) return null;
+        return { left: clamp(anchorX, viewportLeft, viewportRight - menuWidth), top };
+      },
+      () => { // above selection
+        const top = sTop - gap - menuHeight;
+        if (top < viewportTop) return null;
+        return { left: clamp(anchorX, viewportLeft, viewportRight - menuWidth), top };
+      }
+    ];
 
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
+    let placement = null;
+    for (const tryPlacement of placements) {
+      placement = tryPlacement();
+      if (placement) break;
+    }
+
+    if (!placement) {
+      // Selection is large enough that no side has room; fall back to
+      // clamping fully inside the viewport (some overlap is unavoidable).
+      placement = {
+        left: clamp(anchorX + gap, viewportLeft, viewportRight - menuWidth),
+        top: clamp(anchorY + gap, viewportTop, viewportBottom - menuHeight)
+      };
+    }
+
+    menu.style.left = `${placement.left}px`;
+    menu.style.top = `${placement.top}px`;
   }
 
   /**
@@ -722,6 +818,7 @@ export class SelectTool extends Tool {
     if (this.menuElements?.menu) {
       this.menuElements.menu.style.display = 'none';
     }
+    this._menuUserPositioned = false;
   }
 
   /**
