@@ -36,6 +36,7 @@
     { "source": "/gallery", "destination": "/gallery/index.html" },
     { "source": "/gallery/(.*)", "destination": "/gallery/index.html" },
     { "source": "/board", "destination": "/gallery/index.html" },
-    { "source": "/board/(.*)", "destination": "/gallery/index.html" }
+    { "source": "/board/(.*)", "destination": "/gallery/index.html" },
+    { "source": "/user/(.*)", "destination": "/user/index.html" }
   ]
 }

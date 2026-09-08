@@ -137,7 +137,7 @@ export default defineConfig(({ command }) => ({
         globIgnores: ['**/brushes/**', '**/snapshots/**'],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         navigateFallback: '/go/index.html',
-        navigateFallbackDenylist: [/^\/api/, /^\/ws/, /^\/gallery/, /^\/chat/, /^\/board-viewer/],
+        navigateFallbackDenylist: [/^\/api/, /^\/ws/, /^\/gallery/, /^\/chat/, /^\/board-viewer/, /^\/user/],
         cleanupOutdatedCaches: true,
         runtimeCaching: [
           {
@@ -212,6 +212,7 @@ export default defineConfig(({ command }) => ({
         boardViewer: resolve(__dirname, 'board-viewer/index.html'),
         gallery: resolve(__dirname, 'gallery/index.html'),
         galleryGrid: resolve(__dirname, 'gallery/grid/index.html'),
+        user: resolve(__dirname, 'user/index.html'),
         board: resolve(__dirname, 'board/index.html'),
         messenger: resolve(__dirname, 'messenger/index.html'),
         // Dev-only variant gallery, served at /dropdown-preview/ by `npm run dev`.

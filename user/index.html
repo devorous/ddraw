@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="index, follow">
+    <title>User Profile — DDraw</title>
+    <meta name="description" content="View a user's profile on DDraw, the free real-time collaborative drawing app.">
+    <link rel="icon" href="/images/pepper.ico">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Open Graph / Twitter (generic — the page fills in the real title/description at runtime) -->
+    <meta property="og:type" content="profile">
+    <meta property="og:site_name" content="DDraw">
+    <meta property="twitter:card" content="summary">
+  </head>
+  <body>
+    <div id="app"></div>
+    <noscript>
+      <div style="padding: 2rem; text-align: center; font-family: sans-serif;">
+        <p><a href="/">Return to DDraw home</a> · <a href="/gallery">Browse the gallery</a></p>
+        <p>Please enable JavaScript to view this profile.</p>
+      </div>
+    </noscript>
+    <script type="module" src="/src/user/main.js"></script>
+  </body>
+</html>

@@ -1,15 +1,17 @@
 /**
- * ProfileDialog — Reusable vanilla JS user profile modal.
- * Works in both the main app and gallery (or any page).
+ * @fileoverview Standalone user profile page — ddraw.ca/user/<username>.
+ *
+ * Same visual language and data as the in-app ProfileDialog (src/ui/ProfileDialog.js),
+ * rendered as a page instead of a modal so it can be linked/shared/indexed directly.
  */
 
-import { BADGES, badgePickerOptions, effectiveBadgeId } from './Badges.js';
+import { BADGES, badgePickerOptions, effectiveBadgeId } from '../ui/Badges.js';
 
-const PX_PER_METER = 3779;
-const ROLE_NAMES = ['Guest', 'User', 'Trusted', 'Helper', 'Mod', 'Admin', 'Owner', 'Noble Mod', 'Holy Mod', 'Deity Mod'];
-const AVATAR_TARGET_PX = 256;
-const AVATAR_QUALITY = 0.82;
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+const TOKEN_KEY = 'topDrawAuthToken';
 
+// Page chrome + a copy of the ProfileDialog card styles (src/ui/ProfileDialog.js),
+// minus the modal backdrop/close-button rules this page doesn't need.
 const STYLES = `
 :root {
   --role-noble: #ba95ff;
@@ -17,74 +19,61 @@ const STYLES = `
   --role-deity: #dd8d4d;
 }
 
-.profile-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.85);
-  z-index: 10000;
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: #0f0f11;
+}
+
+.user-page {
+  min-height: 100vh;
+  font-family: 'Inter', -apple-system, sans-serif;
+  color: #e8e2d5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.5rem 1rem 4rem;
+}
+
+.user-page-topbar {
+  width: 100%;
+  max-width: 440px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 1rem;
-  backdrop-filter: blur(4px);
-  animation: profileFadeIn 0.15s ease;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
 }
-
-@keyframes profileFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+.user-page-brand {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: #fff;
+  text-decoration: none;
+  letter-spacing: -0.01em;
 }
+.user-page-brand:hover { color: #00d4aa; }
+.user-page-gallery-link {
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.6);
+  text-decoration: none;
+}
+.user-page-gallery-link:hover { color: #fff; }
 
-.profile-dialog {
+.user-page-card {
   position: relative;
   background: linear-gradient(180deg, #1c1c1f 0%, #141416 100%);
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 12px;
   max-width: 440px;
   width: 100%;
-  max-height: 90vh;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  animation: profileSlideUp 0.2s ease;
-  font-family: 'Inter', -apple-system, sans-serif;
-  color: #e8e2d5;
   box-shadow: 0 24px 60px rgba(0,0,0,0.5);
-}
-
-@keyframes profileSlideUp {
-  from { transform: translateY(16px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
-}
-
-.profile-dialog-close {
-  position: absolute;
-  top: 0.75rem;
-  right: 0.75rem;
-  z-index: 2;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: rgba(0,0,0,0.4);
-  border: 1px solid rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.6);
-  font-size: 1.5rem;
-  cursor: pointer;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  transition: background 0.15s, color 0.15s;
-}
-.profile-dialog-close:hover {
-  background: rgba(255,255,255,0.1);
-  color: #fff;
-}
-
-.profile-dialog-body {
   padding: 1.5rem;
-  overflow-y: auto;
+  animation: profileFadeIn 0.15s ease;
+}
+
+@keyframes profileFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .profile-dialog-loading,
@@ -322,6 +311,7 @@ const STYLES = `
   transition: border-color 0.2s, color 0.2s, background 0.2s;
   text-decoration: none;
   text-align: center;
+  display: block;
 }
 .profile-btn:hover {
   border-color: rgba(255,255,255,0.2);
@@ -462,10 +452,6 @@ const STYLES = `
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.profile-status-text.empty {
-  color: rgba(255,255,255,0.4);
-  font-style: italic;
-}
 .profile-status.clickable {
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
@@ -475,9 +461,7 @@ const STYLES = `
   border-color: rgba(255,255,255,0.12);
 }
 
-.profile-status-quick {
-  margin-top: 1rem;
-}
+.profile-status-quick { margin-top: 1rem; }
 .profile-status-quick input {
   width: 100%;
   background: rgba(255,255,255,0.03);
@@ -487,6 +471,7 @@ const STYLES = `
   font: inherit;
   font-size: 0.85rem;
   padding: 0.6rem 0.85rem;
+  box-sizing: border-box;
   transition: border-color 0.15s, background 0.15s;
 }
 .profile-status-quick input::placeholder { color: rgba(255,255,255,0.4); }
@@ -514,6 +499,7 @@ const STYLES = `
   font: inherit;
   font-size: 0.85rem;
   padding: 0.6rem 0.75rem;
+  box-sizing: border-box;
 }
 .profile-status-editor textarea:focus {
   outline: none;
@@ -551,6 +537,18 @@ const STYLES = `
 }
 .profile-status-editor-actions button:disabled { opacity: 0.5; cursor: default; }
 `;
+
+function injectStyles() {
+  const style = document.createElement('style');
+  style.textContent = STYLES;
+  document.head.appendChild(style);
+}
+
+const PX_PER_METER = 3779;
+const ROLE_NAMES = ['Guest', 'User', 'Trusted', 'Helper', 'Mod', 'Admin', 'Owner', 'Noble Mod', 'Holy Mod', 'Deity Mod'];
+const AVATAR_TARGET_PX = 256;
+const AVATAR_QUALITY = 0.82;
+const STATUS_MAX = 140;
 
 function rankClass(role) {
   if (role >= 9) return 'rank-deity';
@@ -603,6 +601,26 @@ function formatTime(ms) {
 
 function formatNumber(n) { return (n || 0).toLocaleString(); }
 
+function formatJoinDate(dateStr) {
+  return new Date(dateStr).toLocaleDateString('en-CA', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str ?? '';
+  return div.innerHTML;
+}
+
+function getAuthToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ''; }
+  catch { return ''; }
+}
+
+function usernameFromPath() {
+  const m = window.location.pathname.match(/^\/user\/([^/]+)\/?$/);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
 function resizeImageToDataUrl(file, maxSize, quality) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -629,18 +647,11 @@ function resizeImageToDataUrl(file, maxSize, quality) {
   });
 }
 
-export class ProfileDialog {
-  constructor(options = {}) {
-    this.onViewGallery = options.onViewGallery || null;
-    this.onImageClick = options.onImageClick || null;
-    this.galleryBaseUrl = options.galleryBaseUrl || '/gallery';
-    this.apiBaseUrl = options.apiBaseUrl || '';
-
-    this._backdrop = null;
-    this._stylesInjected = false;
-    this._boundKeydown = this._handleKeydown.bind(this);
-    this._boundBadgeOutside = this._handleBadgeOutside.bind(this);
+class UserPage {
+  constructor(root) {
+    this.root = root;
     this._data = null;
+    this._username = '';
     this._savingAvatar = false;
     this._savingBadge = false;
     this._badgeMenuOpen = false;
@@ -648,108 +659,76 @@ export class ProfileDialog {
     this._editingStatus = false;
     this._statusDraft = '';
     this._savingStatus = false;
-  }
-
-  get _STATUS_MAX() { return 140; }
-
-  _buildGalleryUrl(pathSegment) {
-    const base = String(this.galleryBaseUrl || '/gallery').replace(/\/$/, '');
-    return `${base}/${encodeURIComponent(pathSegment)}`;
-  }
-
-  _injectStyles() {
-    if (this._stylesInjected) return;
-    const style = document.createElement('style');
-    style.textContent = STYLES;
-    document.head.appendChild(style);
-    this._stylesInjected = true;
-  }
-
-  _getAuthToken() {
-    try { return localStorage.getItem('topDrawAuthToken') || ''; }
-    catch { return ''; }
-  }
-
-  async show(username, { instant = false } = {}) {
-    if (!username) return;
-
-    this._injectStyles();
-    this.close();
-    this._editError = '';
-    this._editingStatus = false;
-    this._statusDraft = '';
-    this._savingStatus = false;
-    this._badgeMenuOpen = false;
-
-    this._backdrop = document.createElement('div');
-    this._backdrop.className = 'profile-dialog-backdrop';
-    if (instant) this._backdrop.style.animation = 'none';
-    this._backdrop.innerHTML = `
-      <div class="profile-dialog">
-        <button class="profile-dialog-close" title="Close">&times;</button>
-        <div class="profile-dialog-body">
-          <div class="profile-dialog-loading">Loading...</div>
-        </div>
-      </div>
-    `;
-
-    this._backdrop.addEventListener('click', (e) => {
-      if (e.target === this._backdrop) this.close();
-    });
-    this._backdrop.querySelector('.profile-dialog-close').addEventListener('click', () => this.close());
-    document.addEventListener('keydown', this._boundKeydown);
+    this._boundBadgeOutside = this._handleBadgeOutside.bind(this);
     document.addEventListener('mousedown', this._boundBadgeOutside);
+  }
 
-    document.body.appendChild(this._backdrop);
-    document.body.style.overflow = 'hidden';
-
+  async load() {
+    this._username = usernameFromPath();
+    if (!this._username) {
+      this._renderMessage('No username given.');
+      return;
+    }
+    this._renderLoading();
     try {
-      const token = this._getAuthToken();
+      const token = getAuthToken();
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const res = await fetch(`${this.apiBaseUrl}/api/users/${encodeURIComponent(username)}`, { headers });
+      const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(this._username)}`, { headers });
       const data = await res.json();
-
       if (!res.ok) {
-        this._renderError(data.error || 'Failed to load profile');
+        this._renderMessage(data.error || 'User not found', true);
         return;
       }
-
       this._data = data;
+      document.title = `${data.username} — DDraw`;
       this._renderProfile();
-    } catch (err) {
-      this._renderError('Connection error');
+    } catch {
+      this._renderMessage('Connection error', true);
     }
   }
 
-  _renderError(message) {
-    const body = this._backdrop?.querySelector('.profile-dialog-body');
-    if (!body) return;
-    body.innerHTML = `<div class="profile-dialog-error">${this._escapeHtml(message)}</div>`;
+  _shell(inner) {
+    this.root.innerHTML = `
+      <div class="user-page">
+        <div class="user-page-topbar">
+          <a class="user-page-brand" href="/">DDraw</a>
+          <a class="user-page-gallery-link" href="/gallery">Gallery</a>
+        </div>
+        <div class="user-page-card">${inner}</div>
+      </div>
+    `;
+  }
+
+  _renderLoading() {
+    this._shell(`<div class="profile-dialog-loading">Loading...</div>`);
+  }
+
+  _renderMessage(message, isError = false) {
+    this._shell(`<div class="profile-dialog-${isError ? 'error' : 'loading'}">${escapeHtml(message)}</div>`);
+  }
+
+  _buildGalleryUrl(pathSegment) {
+    return `/gallery/${encodeURIComponent(pathSegment)}`;
   }
 
   _renderProfile() {
-    const body = this._backdrop?.querySelector('.profile-dialog-body');
-    if (!body || !this._data) return;
     const data = this._data;
-
     const role = data.role || 1;
     const rcls = rankClass(role);
     const hue = avatarHue(data.username);
-    const initial = this._escapeHtml(avatarInitial(data.username));
+    const initial = escapeHtml(avatarInitial(data.username));
     const isOwn = !!data.isOwn;
 
     const joinMeta = data.createdAt
-      ? `<span class="profile-meta">Joined ${new Date(data.createdAt).toLocaleDateString('en-CA', {
-          year: 'numeric', month: 'short', day: 'numeric'
-        })}</span>`
+      ? `<span class="profile-meta">Joined ${formatJoinDate(data.createdAt)}</span>`
       : '';
 
     this._recentUploads = data.recentUploads;
 
     const recentHtml = data.recentUploads.length > 0
       ? data.recentUploads.map((item, idx) => `
-          <button class="profile-recent-item" data-index="${idx}" title="${this._escapeHtml(item.title || 'View')}">
-            <img src="${item.thumbUrl}" alt="${this._escapeHtml(item.title || 'artwork')}" loading="lazy">
+          <button class="profile-recent-item" data-index="${idx}" title="${escapeHtml(item.title || 'View')}">
+            <img src="${item.thumbUrl}" alt="${escapeHtml(item.title || 'artwork')}" loading="lazy">
           </button>
         `).join('')
       : '<div class="profile-recent-empty">No uploads yet</div>';
@@ -776,33 +755,24 @@ export class ProfileDialog {
       : '';
 
     const errHtml = this._editError
-      ? `<div class="profile-edit-error">${this._escapeHtml(this._editError)}</div>`
+      ? `<div class="profile-edit-error">${escapeHtml(this._editError)}</div>`
       : '';
 
-    // For the user's own profile, fall back to in-app self state for Discord
-    // link status so the badge shows even if this fetch predates it.
-    const selfHasDiscord = (typeof window !== 'undefined') ? window.app?.self?.hasDiscord : false;
-    const selfIsSupporter = (typeof window !== 'undefined') ? window.app?.self?.isSupporter : false;
-    const badgeData = {
-      ...data,
-      hasDiscord: (data.hasDiscord ?? (isOwn ? selfHasDiscord : false)) || false,
-      isSupporter: (data.isSupporter ?? (isOwn ? selfIsSupporter : false)) || false
-    };
-    const currentBadgeId = effectiveBadgeId(badgeData);
+    const currentBadgeId = effectiveBadgeId(data);
     const badgeIcon = (id) => {
       const def = BADGES[id];
       if (!def) return '';
       return def.img
-        ? `<img class="profile-badge-img" src="${def.img}" alt="${this._escapeHtml(def.label)}" draggable="false">`
+        ? `<img class="profile-badge-img" src="${def.img}" alt="${escapeHtml(def.label)}" draggable="false">`
         : `<span class="profile-badge-svg" style="color:${def.color || 'currentColor'}">${def.svg}</span>`;
     };
     const noIcon = '<span class="profile-badge-noicon"></span>';
     let badgeHtml = '';
     if (isOwn) {
       const optionBtn = (id, selected, inner, label) =>
-        `<button type="button" class="profile-badge-option${selected ? ' selected' : ''}" data-badge="${id}" title="${this._escapeHtml(label)}" role="option" aria-selected="${selected}">${inner}</button>`;
+        `<button type="button" class="profile-badge-option${selected ? ' selected' : ''}" data-badge="${id}" title="${escapeHtml(label)}" role="option" aria-selected="${selected}">${inner}</button>`;
       const menuItems = [optionBtn('none', !currentBadgeId, noIcon, 'No badge')]
-        .concat(badgePickerOptions(badgeData).map((b) =>
+        .concat(badgePickerOptions(data).map((b) =>
           optionBtn(b.id, b.id === currentBadgeId, badgeIcon(b.id), b.label)))
         .join('');
       const menuHtml = this._badgeMenuOpen
@@ -817,16 +787,16 @@ export class ProfileDialog {
           ${menuHtml}
         </span>`;
     } else if (currentBadgeId && BADGES[currentBadgeId]) {
-      badgeHtml = `<span class="profile-badge-current" title="${this._escapeHtml(BADGES[currentBadgeId].label)}">${badgeIcon(currentBadgeId)}</span>`;
+      badgeHtml = `<span class="profile-badge-current" title="${escapeHtml(BADGES[currentBadgeId].label)}">${badgeIcon(currentBadgeId)}</span>`;
     }
 
     const status = (data.status || '').trim();
     let statusHtml = '';
     if (this._editingStatus && isOwn) {
-      const remaining = this._STATUS_MAX - (this._statusDraft || '').length;
+      const remaining = STATUS_MAX - (this._statusDraft || '').length;
       statusHtml = `
         <div class="profile-status-editor">
-          <textarea data-input="status" maxlength="${this._STATUS_MAX}" placeholder="Add a status or short blurb..."${this._savingStatus ? ' disabled' : ''}>${this._escapeHtml(this._statusDraft)}</textarea>
+          <textarea data-input="status" maxlength="${STATUS_MAX}" placeholder="Add a status or short blurb...">${escapeHtml(this._statusDraft)}</textarea>
           <div class="profile-status-editor-row">
             <span>${remaining} left</span>
             <div class="profile-status-editor-actions">
@@ -838,19 +808,19 @@ export class ProfileDialog {
     } else if (status) {
       const clickable = isOwn ? ' clickable' : '';
       const action = isOwn ? ' data-action="edit-status"' : '';
-      const role = isOwn ? ' role="button" tabindex="0"' : '';
+      const roleAttr = isOwn ? ' role="button" tabindex="0"' : '';
       statusHtml = `
-        <div class="profile-status${clickable}"${action}${role}>
-          <div class="profile-status-text">${this._escapeHtml(status)}</div>
+        <div class="profile-status${clickable}"${action}${roleAttr}>
+          <div class="profile-status-text">${escapeHtml(status)}</div>
         </div>`;
     } else if (isOwn) {
       statusHtml = `
         <div class="profile-status-quick">
-          <input type="text" data-input="status-quick" maxlength="${this._STATUS_MAX}" placeholder="Add a status..."${this._savingStatus ? ' disabled' : ''}>
+          <input type="text" data-input="status-quick" maxlength="${STATUS_MAX}" placeholder="Add a status...">
         </div>`;
     }
 
-    body.innerHTML = `
+    this._shell(`
       <div class="profile-header">
         <div class="profile-avatar-wrap">
           <div class="profile-avatar ${rcls}" style="${avatarBg}">${avatarInner}</div>
@@ -858,7 +828,7 @@ export class ProfileDialog {
         </div>
         <div class="profile-identity">
           <div class="profile-username-row">
-            <h2 class="profile-username ${rcls}">${this._escapeHtml(data.username)}</h2>
+            <h1 class="profile-username ${rcls}">${escapeHtml(data.username)}</h1>
             ${badgeHtml}
           </div>
           <div class="profile-role-row">
@@ -903,36 +873,20 @@ export class ProfileDialog {
       </div>
 
       <div class="profile-actions">
-        <a href="/user/${encodeURIComponent(data.username)}" class="profile-btn">
-          Full Profile
-        </a>
-        <a href="${this._buildGalleryUrl(data.username)}" class="profile-btn profile-btn-primary" target="_blank">
-          View on Gallery
+        <a href="${this._buildGalleryUrl(data.username)}" class="profile-btn profile-btn-primary">
+          View All Art
         </a>
       </div>
-    `;
+    `);
 
+    const body = this.root;
     body.querySelectorAll('.profile-recent-item').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.dataset.index, 10);
         const item = this._recentUploads[idx];
-        if (item && this.onImageClick) {
-          this.close();
-          this.onImageClick(item);
-        } else if (item) {
-          window.open(this._buildGalleryUrl(item.id), '_blank');
-        }
+        if (item) window.open(this._buildGalleryUrl(item.id), '_blank');
       });
     });
-
-    if (this.onViewGallery) {
-      const galleryLink = body.querySelector('.profile-btn-primary');
-      galleryLink?.addEventListener('click', (e) => {
-        e.preventDefault();
-        this.close();
-        this.onViewGallery(data.username);
-      });
-    }
 
     this._wireEditing(body);
   }
@@ -998,7 +952,7 @@ export class ProfileDialog {
       statusInput.addEventListener('input', (e) => {
         this._statusDraft = e.target.value;
         const row = root.querySelector('.profile-status-editor-row span');
-        if (row) row.textContent = `${this._STATUS_MAX - this._statusDraft.length} left`;
+        if (row) row.textContent = `${STATUS_MAX - this._statusDraft.length} left`;
       });
       statusInput.focus();
       const len = statusInput.value.length;
@@ -1071,7 +1025,6 @@ export class ProfileDialog {
     try {
       const updated = await this._patchProfile({ selectedBadge: badgeId });
       this._data.selectedBadge = updated.selectedBadge ?? badgeId;
-      if (typeof window !== 'undefined') window.app?.applySelfBadge?.(this._data.selectedBadge);
     } catch (err) {
       this._editError = err?.message || 'Failed to save badge';
     } finally {
@@ -1097,9 +1050,9 @@ export class ProfileDialog {
   }
 
   async _patchProfile(body) {
-    const token = this._getAuthToken();
+    const token = getAuthToken();
     if (!token) throw new Error('Not signed in');
-    const res = await fetch(`${this.apiBaseUrl}/api/users/me/profile`, {
+    const res = await fetch(`${API_BASE}/api/users/me/profile`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -1112,34 +1065,14 @@ export class ProfileDialog {
     return json;
   }
 
-  _handleKeydown(e) {
-    if (e.key === 'Escape') this.close();
-  }
-
   _handleBadgeOutside(e) {
     if (!this._badgeMenuOpen) return;
     if (e.target.closest?.('.profile-badge-picker')) return;
     this._badgeMenuOpen = false;
     this._renderProfile();
   }
-
-  _escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str ?? '';
-    return div.innerHTML;
-  }
-
-  close() {
-    if (this._backdrop) {
-      this._backdrop.remove();
-      this._backdrop = null;
-      document.body.style.overflow = '';
-      document.removeEventListener('keydown', this._boundKeydown);
-      document.removeEventListener('mousedown', this._boundBadgeOutside);
-    }
-    this._badgeMenuOpen = false;
-    this._data = null;
-  }
 }
 
-export const profileDialog = new ProfileDialog();
+injectStyles();
+const page = new UserPage(document.getElementById('app'));
+page.load();
