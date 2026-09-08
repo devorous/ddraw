@@ -88,6 +88,14 @@ export const TEXT_FONT_OPTIONS = [
     pickerFontSize: 15,
     appliedSizeMultiplier: 0.35,
     appliedOffset: 0
+  },
+  {
+    label: 'Patrick Hand',
+    family: '"Patrick Hand", cursive',
+    googleFamily: 'Patrick Hand',
+    pickerFontSize: 16,
+    appliedSizeMultiplier: 0.25,
+    appliedOffset: 0
   }
 ];
 
