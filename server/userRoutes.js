@@ -109,6 +109,7 @@ export async function handleUserProfile(req, res, username) {
         likesCount: item.likesCount || 0,
         views: item.views || 0,
         createdAt: item.createdAt,
+        animatedUrl: item.animatedUrl || null,
       })),
     });
   } catch (err) {

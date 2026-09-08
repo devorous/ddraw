@@ -37,6 +37,12 @@
   let savingAvatar = $state(false);
   let editError = $state('');
   let fileInputEl = $state();
+  let playingTimelapseId = $state(null);
+
+  function toggleTimelapse(e, item) {
+    e.stopPropagation();
+    playingTimelapseId = playingTimelapseId === item.id ? null : item.id;
+  }
 
   function rankClass(role) {
     if (role >= 9) return 'rank-deity';
@@ -100,6 +106,7 @@
       error: null
     };
     editError = '';
+    playingTimelapseId = null;
   }
 
   function handleBackdropClick(e) {
@@ -449,13 +456,39 @@
                 <div class="profile-recent-grid">
                   {#if recentUploads.length > 0}
                     {#each recentUploads as item}
-                      <button
+                      <div
                         class="profile-recent-item"
                         onclick={() => handleImageClick(item)}
+                        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleImageClick(item); } }}
+                        role="button"
+                        tabindex="0"
                         title={item.title || 'View'}
                       >
-                        <img src={item.thumbUrl} alt={item.title || 'artwork'} loading="lazy">
-                      </button>
+                        {#if item.animatedUrl && playingTimelapseId === item.id}
+                          <video
+                            class="profile-recent-timelapse"
+                            src={item.animatedUrl}
+                            autoplay
+                            muted
+                            loop
+                            playsinline
+                            onclick={(e) => e.stopPropagation()}
+                          ></video>
+                        {:else}
+                          <img src={item.thumbUrl} alt={item.title || 'artwork'} loading="lazy">
+                        {/if}
+                        {#if item.animatedUrl}
+                          <button
+                            type="button"
+                            class="profile-recent-lapse-btn"
+                            onclick={(e) => toggleTimelapse(e, item)}
+                            title={playingTimelapseId === item.id ? 'Stop timelapse' : 'Play timelapse'}
+                            aria-label={playingTimelapseId === item.id ? 'Stop timelapse' : 'Play timelapse'}
+                          >
+                            {playingTimelapseId === item.id ? '■' : '▶'}
+                          </button>
+                        {/if}
+                      </div>
                     {/each}
                   {:else}
                     <div class="profile-recent-empty">No uploads yet</div>
@@ -768,6 +801,7 @@
     gap: 0.5rem;
   }
   .profile-recent-item {
+    position: relative;
     aspect-ratio: 1;
     overflow: hidden;
     border-radius: 6px;
@@ -776,7 +810,8 @@
     padding: 0;
     cursor: pointer;
   }
-  .profile-recent-item img {
+  .profile-recent-item img,
+  .profile-recent-item video {
     width: 100%;
     height: 100%;
     object-fit: cover;
@@ -784,6 +819,31 @@
     transition: transform 0.2s;
   }
   .profile-recent-item:hover img { transform: scale(1.05); }
+
+  .profile-recent-lapse-btn {
+    position: absolute;
+    bottom: 4px;
+    right: 4px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.6);
+    border: 1px solid rgba(255,255,255,0.25);
+    color: #fff;
+    font-size: 0.6rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.15s;
+  }
+  .profile-recent-lapse-btn:hover {
+    background: #00d4aa;
+    color: #121212;
+    transform: scale(1.08);
+  }
   .profile-recent-empty {
     grid-column: 1 / -1;
     text-align: center;
