@@ -30,11 +30,25 @@ export class GlitchBlurTool extends Tool {
   /**
    * Layers this glitch stroke operates on.
    *
+   * Exactly one: the stroke owner's active layer — which the UI gates to layer
+   * 0 for both blur tools (`UI.updateBlurToolState`, and `Board.endStroke`'s
+   * "blur/glitch blur always create their stroke on layer 0"). BlurTool and
+   * circleBlur have always worked this way; glitch was the outlier, opening a
+   * stroke on all three layers so it smeared whatever was visible above the
+   * base layer too. That cost one undo press per layer for a single stroke, and
+   * desynced observers, who undo one GLITCH_RESULT at a time. A stroke stays a
+   * stroke: one layer, one commit, one broadcast, one undo.
+   *
+   * Kept as a list (rather than collapsed to a scalar) because begin, stamp,
+   * dirty-marking, capture and commit all iterate it, and GLITCH_RESULT still
+   * carries a per-message `layerIndex` — tapes recorded before this change
+   * replay their extra layers unchanged.
+   *
    * Once a stroke is open the answer is frozen (`strokeLayersByUser`): begin,
    * stamp, dirty-marking, image capture and commit MUST all agree, or a stroke
-   * opened on one layer gets committed on three.
+   * opened on one layer gets committed on another.
    *
-   * @param {Object} [user] - Stroke owner; omit for the unfiltered list.
+   * @param {Object} [user] - Stroke owner; omit to fall back to the local user.
    * @returns {number[]}
    */
   _getTargetLayers(user) {
@@ -42,34 +56,16 @@ export class GlitchBlurTool extends Tool {
       const cached = this.strokeLayersByUser.get(user.id ?? this.board.app?.self?.id ?? 0);
       if (cached) return cached;
     }
+    const layerIdx = this._getTargetLayer(user);
     const count = this.board.layerManager?.getLayerCount?.() ?? 0;
-    return Array.from({ length: Math.min(3, count) }, (_, layerIdx) => layerIdx);
+    return (count > 0 && layerIdx >= count) ? [] : [layerIdx];
   }
 
   /**
-   * Decide, once per stroke, which of the three candidate layers are worth
-   * glitching — and cache it.
+   * Freeze this stroke's layer set, once, at pointerDown.
    *
-   * Glitch was the only tool stamping ALL three layers unconditionally (blur and
-   * circleBlur take `user.activeLayer` alone), so on the usual board — content on
-   * layer 0, nothing above — two thirds of every stroke's work was provably
-   * wasted: a full-board snapshot canvas plus a `compositeLayerRange` at
-   * pointerDown, then a crop canvas + `getImageData` readback + WASM blur +
-   * `putImageData` upload per stamp point, per empty layer.
-   *
-   * Skipping them is behaviour-preserving, not an approximation. For layers 1+
-   * `captureSnapshot` passes a null background, so an empty layer's snapshot is
-   * fully transparent; blurring transparent yields transparent, the stamp
-   * deposits nothing, `_captureLocalStrokeImages` finds no content bounds and
-   * `_endTargetLayerStrokes` already cancels that layer's stroke. Same end
-   * state, none of the work.
-   *
-   * Layer 0 is always kept: its snapshot composites the board background in, so
-   * it has content whether or not anyone has drawn.
-   *
-   * MUST run before `beginUserStroke` — `rangeHasRenderableContent` counts an
-   * active stroke as content, so a set computed afterwards would include every
-   * layer again.
+   * MUST run before `beginUserStroke` so every later step reads the same answer
+   * as `_beginTargetLayerStrokes` did.
    *
    * @param {Object} user
    * @param {number|string} userId
@@ -77,11 +73,9 @@ export class GlitchBlurTool extends Tool {
    * @private
    */
   _computeStrokeLayers(user, userId) {
-    const lm = this.board.layerManager;
-    const all = this._getTargetLayers();
-    const layers = lm?.rangeHasRenderableContent
-      ? all.filter((idx) => idx === 0 || lm.rangeHasRenderableContent(idx, idx + 1))
-      : all;
+    const layerIdx = this._getTargetLayer(user);
+    const count = this.board.layerManager?.getLayerCount?.() ?? 0;
+    const layers = (count > 0 && layerIdx >= count) ? [] : [layerIdx];
     this.strokeLayersByUser.set(userId, layers);
     return layers;
   }
@@ -177,11 +171,11 @@ export class GlitchBlurTool extends Tool {
     for (const layerIdx of this._getTargetLayers(user)) {
       this.board.releaseSelectionMaskClipForStroke?.(layerIdx, userId);
 
-      // A glitch stroke begins on every target layer, but layers with nothing
-      // under the brush produce an empty (fully transparent) stroke. Committing
-      // those would push phantom undo records — so one glitch stroke would take
-      // several undo presses to remove. Discard the empty layers instead; only
-      // layers that actually received glitch pixels (and were broadcast) become
+      // A stroke dragged over bare board has nothing to smear, so it produces
+      // an empty (fully transparent) stroke canvas. Committing that would push
+      // a phantom undo record — an undo press that visibly does nothing — and
+      // broadcast nothing to pair it with. Discard it instead; only a layer
+      // that actually received glitch pixels (and was broadcast) becomes
       // undoable. contentLayers is null only when we couldn't scan (non-self),
       // in which case we keep the original commit-all behaviour.
       if (contentLayers && !contentLayers.has(layerIdx)) {

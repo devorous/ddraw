@@ -116,6 +116,10 @@ const LOCAL_TOOL = arg('localtool', null);
 // base before measuring, matching tiled_ab.mjs's regimes.
 const TILED = flag('tiled');
 const CONTENT = arg('content', null);
+// Force the LOCAL driven client's Low-Power Mode preference before measuring
+// ('on'|'off'|'auto'). Without this the run just inherits whatever the
+// attached browser's stored preference already is.
+const LOW_POWER = arg('lowpower', null);
 
 const BOARD_SIZES = {
   '720p': [720, 1280], '1080p': [1080, 1920], '1440p': [1440, 2560],
@@ -356,11 +360,25 @@ async function runOnce(runLabel) {
         args: launchArgs,
         defaultViewport: null
       });
-  const page = (await browser.pages())[0] || (await browser.newPage());
+  // On an attached (CDP_URL) browser, prefer an already-loaded app tab and
+  // skip navigating it: 'networkidle2' never settles against a page that
+  // already holds an open room WebSocket (it reads as ongoing traffic), which
+  // either hangs until its own timeout or leaves the target in a bad state
+  // for the CDP calls that follow ("Target closed"). pages()[0] is also not
+  // guaranteed to BE the app tab once other targets exist.
+  const existing = CDP_URL
+    ? (await browser.pages()).find((p) => p.url().startsWith(new URL(TARGET_URL).origin))
+    : null;
+  const page = existing || (await browser.pages())[0] || (await browser.newPage());
+  const alreadyLoaded = existing && await page.evaluate(() => !!window.app).catch(() => false);
 
   try {
     if (CPU_THROTTLE > 1) await page.emulateCPUThrottling(CPU_THROTTLE);
-    await page.goto(TARGET_URL, { waitUntil: 'networkidle2' });
+    if (!alreadyLoaded) {
+      await page.goto(TARGET_URL, { waitUntil: 'networkidle2' });
+    } else {
+      console.log('    reusing already-loaded app tab:', page.url());
+    }
     await page.waitForFunction(() => window.app && window.app.self != null, { timeout: READY_TIMEOUT });
     await page.evaluate(PROBE);
 
@@ -457,6 +475,19 @@ async function runOnce(runLabel) {
         window.app.board.compositeAllLayers();
       }, CONTENT);
       console.log(`    pre-painted content: ${CONTENT}`);
+    }
+
+    if (LOW_POWER) {
+      const lp = await page.evaluate((mode) => {
+        const next = { ...window.app.appPreferences, general: { ...window.app.appPreferences.general, lowPowerMode: mode } };
+        window.app.setAppPreferences(next);
+        return {
+          active: window.app.isLowPowerModeActive(),
+          tickRate: window.app.inputBufferManager.tickRate,
+          targetFPS: window.app.board.targetFPS,
+        };
+      }, LOW_POWER);
+      console.log(`    low-power mode: ${LOW_POWER} -> active=${lp.active} tickRate=${lp.tickRate} targetFPS=${lp.targetFPS}`);
     }
 
     if (LOCAL_TOOL) {
@@ -583,6 +614,7 @@ async function runOnce(runLabel) {
     const result = {
       label: runLabel, at: new Date().toISOString(), size: SIZE, dims, users,
       vus: VUS, room, localTool: LOCAL_TOOL, k6Tools: K6_TOOLS, tiled: TILED, content: CONTENT,
+      lowPower: LOW_POWER,
       frames, census, reclaim, devtools, ...trace
     };
 
@@ -602,6 +634,15 @@ async function runOnce(runLabel) {
     for (const b of census.buckets) console.log(`    ${String(b.mb).padStart(7)} MB  x${String(b.count).padEnd(3)} ${b.label}`);
     return result;
   } finally {
+    // Restore 'auto' on an attached browser -- it's a shared, persistent
+    // instance (not ours to close), so a forced preference from this run
+    // would otherwise leak into whatever runs against it next.
+    if (CDP_URL && LOW_POWER) {
+      await page.evaluate(() => {
+        const next = { ...window.app.appPreferences, general: { ...window.app.appPreferences.general, lowPowerMode: 'auto' } };
+        window.app.setAppPreferences(next);
+      }).catch(() => {});
+    }
     // An attached browser is not ours to kill -- closing it would take down the
     // Chromebook's session between repeats.
     if (CDP_URL) await browser.disconnect();

@@ -162,6 +162,22 @@ export class InputBufferManager {
     this.tickInterval = 1000 / this.tickRate;
     /** @type {number|null} */
     this.tickTimer = null;
+    /**
+     * EMA of how late each tick lands vs. its expected interval — a free,
+     * always-on congestion signal (no separate frame-timing instrumentation
+     * needed). Drives the adaptive remote-preview render interval below:
+     * on a bogged-down client, other users' strokes visibly batch and catch
+     * up rather than each contributing to the pileup. Smoothed so one slow
+     * tick doesn't flap the interval; recovers on its own as drift subsides.
+     * @type {number}
+     */
+    this._tickDriftEmaMs = 0;
+    /**
+     * Debug/measurement-only override for getAdaptiveRemotePreviewIntervalMs.
+     * null in normal operation.
+     * @type {number|null}
+     */
+    this.debugForcedRemotePreviewIntervalMs = null;
     // Last idle tile-reclamation pass. Starts at -Infinity so the first idle
     // tick after load can run one rather than waiting out the interval.
     this._lastTileReclaim = -Infinity;
@@ -296,6 +312,14 @@ export class InputBufferManager {
    */
   tick() {
     const now = performance.now();
+    if (this.lastTickTime !== null) {
+      const drift = (now - this.lastTickTime) - this.tickInterval;
+      // EMA over ~1s of ticks; clamp the input so one huge stall (e.g. a tab
+      // coming back from background) doesn't need many ticks to decay back out.
+      const sample = Math.max(0, Math.min(drift, 1000));
+      const alpha = 2 / (this.tickRate + 1);
+      this._tickDriftEmaMs += (sample - this._tickDriftEmaMs) * alpha;
+    }
     this.lastTickTime = now;
 
     const { app } = this;
@@ -305,6 +329,29 @@ export class InputBufferManager {
     this._snapshotStrokesToQueue();   // commit strokes to queue (no-op if buffer already drained)
     this.drainBroadcastQueue();       // send all queued actions in order
     this._maybeReclaimTiles(now);     // idle-only tile reclamation; never on a drawing tick
+  }
+
+  /**
+   * How often THIS client should redraw other users' in-progress strokes,
+   * in ms. Floor matches the long-standing fixed interval (never slower than
+   * today on a healthy machine); ceiling caps how far behind a remote drawer
+   * is allowed to visibly fall before catching up in one render — long enough
+   * to shed real load, short enough that a remote cursor doesn't read as gone.
+   * Recomputed on every call (cheap: one EMA read), so it eases back down on
+   * its own as soon as tick drift subsides — no separate recovery timer.
+   * @returns {number}
+   */
+  getAdaptiveRemotePreviewIntervalMs() {
+    // Debug/measurement override — sweep a fixed interval instead of the
+    // congestion-driven value, e.g. window.app.inputBufferManager
+    // .debugForcedRemotePreviewIntervalMs = 100. Not used in normal operation.
+    if (this.debugForcedRemotePreviewIntervalMs != null) {
+      return this.debugForcedRemotePreviewIntervalMs;
+    }
+    const FLOOR_MS = 33;
+    const CEIL_MS = 250;
+    const DRIFT_TO_MS_SCALE = 2;
+    return Math.min(CEIL_MS, FLOOR_MS + this._tickDriftEmaMs * DRIFT_TO_MS_SCALE);
   }
 
   /**

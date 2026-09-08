@@ -150,6 +150,17 @@ export class WebSocketClient {
     this._processingScheduledHidden = false;
 
     /**
+     * Measurement-only inbound MM thinning factor; see `_processMessage`.
+     * @private
+     * @type {number}
+     */
+    this._debugMmKeepEveryN = 1;
+    /** @private @type {Map<number, number>} */
+    this._debugMmSeen = new Map();
+    /** @private @type {number} */
+    this._debugMmDropped = 0;
+
+    /**
      * In-flight server history backfill, accumulated between
      * HISTORY_BACKFILL_BEGIN and _END. Null when none is streaming. See
      * {@link WebSocketClient._handleHistoryBackfill}.
@@ -888,6 +899,22 @@ export class WebSocketClient {
    * @returns {void}
    */
   _processMessage(data) {
+    // Measurement-only: drop all but 1 in N inbound MM messages per sender, to
+    // emulate a server-side per-recipient coalescer and bound what one could
+    // buy on a weak client BEFORE any server code exists. Deliberately placed
+    // after _tapInbound (every caller runs the tap first), so the stroke
+    // fingerprint log and replay tape still see the full stream and parity is
+    // unaffected — only the live canvas thins out, which is exactly the cost
+    // being measured. 1 in normal operation; see inbound_ablation_ab.mjs.
+    if (this._debugMmKeepEveryN > 1 && data.t === T.MM) {
+      const seen = (this._debugMmSeen.get(data.u) || 0) + 1;
+      this._debugMmSeen.set(data.u, seen);
+      if (seen % this._debugMmKeepEveryN !== 0) {
+        this._debugMmDropped++;
+        return;
+      }
+    }
+
     // Parity messages route to ParityClient outside the main switch — they
     // don't need any of the live-app side effects (cursor updates etc.).
     if (this.parityClient && this.parityClient.receive(data)) return;

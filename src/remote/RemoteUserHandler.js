@@ -44,6 +44,12 @@ const MIRROR_MAX_PREVIEW_RECTS = 8;
  * THIS full-board clear, which ran at the same per-batch cadence regardless.
  * With N concurrently drawing users each sending ~60 batches/sec, that is N
  * full-board clears/sec that no prior fix touched.
+ *
+ * Fallback only — `_requestRemotePreviewRender` normally uses
+ * InputBufferManager.getAdaptiveRemotePreviewIntervalMs(), which widens this
+ * on the local client's own measured tick congestion. This constant is what
+ * a healthy client still gets at the floor, and what's used if inputBufferManager
+ * is unavailable for any reason.
  */
 const REMOTE_PREVIEW_INTERVAL_MS = 33;
 
@@ -359,7 +365,12 @@ export class RemoteUserHandler {
    * @param {{x:number,y:number}} pos
    */
   _requestRemotePreviewRender(user, pos) {
+    // Debug/measurement counters — how many incoming batches asked for a
+    // render vs. how many actually fired one. Not used in normal operation;
+    // read via getDebugStats().
+    this._debugPreviewCallCount = (this._debugPreviewCallCount || 0) + 1;
     const fire = (p) => {
+      this._debugPreviewFireCount = (this._debugPreviewFireCount || 0) + 1;
       this.renderRemotePreview(user, p);
       // Previously ran unconditionally on every batch, alongside the direct
       // renderRemotePreview call this replaces — moved here so they only fire
@@ -368,9 +379,17 @@ export class RemoteUserHandler {
       if (user.tool === 'brush') this.board.requestUpdate();
     };
 
+    // Adaptive: widens on THIS client's own measured tick congestion (see
+    // InputBufferManager.getAdaptiveRemotePreviewIntervalMs), so a bogged-down
+    // client visibly batches other users' strokes and catches up, rather than
+    // every remote drawer piling another full-board clear onto an already
+    // late render loop. Recomputed per call, so it eases back down on its own.
+    const interval = this.app.inputBufferManager?.getAdaptiveRemotePreviewIntervalMs?.()
+      ?? REMOTE_PREVIEW_INTERVAL_MS;
+
     const now = performance.now();
     const elapsed = now - (user._remotePreviewRenderAt || 0);
-    if (elapsed >= REMOTE_PREVIEW_INTERVAL_MS) {
+    if (elapsed >= interval) {
       user._remotePreviewRenderAt = now;
       fire(pos);
       return;
@@ -385,7 +404,7 @@ export class RemoteUserHandler {
       // already check before calling it directly.
       if (!user.mousedown || user.panning) return;
       fire(user._remotePreviewPendingPos ?? pos);
-    }, REMOTE_PREVIEW_INTERVAL_MS - elapsed);
+    }, interval - elapsed);
   }
 
   /** @private */
@@ -2265,7 +2284,9 @@ export class RemoteUserHandler {
       remotePatternOffscreens: this.toolManager.getTool('pattern')?.remoteOffscreens?.size ?? 0,
       remotePixelTempCanvases: this.toolManager.getTool('pixel')?.tempCanvases?.size ?? 0,
       remoteBlurTracks: this.toolManager.getTool('blur')?.strokePoints?.size ?? 0,
-      remoteGlitchTracks: this.toolManager.getTool('glitchBlur')?.strokePoints?.size ?? 0
+      remoteGlitchTracks: this.toolManager.getTool('glitchBlur')?.strokePoints?.size ?? 0,
+      previewCallCount: this._debugPreviewCallCount || 0,
+      previewFireCount: this._debugPreviewFireCount || 0
     };
   }
 

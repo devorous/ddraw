@@ -1,8 +1,23 @@
 /**
- * @fileoverview K6 stress test for medium-volume WebSocket traffic. Each VU
- * picks tools at random across the FULL tool set (incl. pattern + confetti)
- * and exercises selection+homography, text with fonts, blend modes, flood
- * fill, and undo.
+ * @fileoverview K6 stress test with sporadic, staggered drawing — unlike
+ * medium_stress_test.js (which idles only 120-360ms between multi-stroke
+ * batches, so a VU is drawing nearly all the time) or idle_users_test.js
+ * (a fixed split: some VUs draw continuously for the whole run, the rest
+ * never draw at all), each VU here independently alternates between a real
+ * IDLE period (socket open, nothing sent — present but not drawing) and an
+ * ACTIVE period (drawing continuously, reusing medium_stress_test.js's
+ * tool/stroke state machine) on its own randomized, staggered schedule.
+ *
+ * The point: "N k6 VUs" should not mean "N people drawing at once, every
+ * second of the run." Real rooms have people drawing in bursts that mostly
+ * don't line up — this is for judging a fix (e.g. an adaptive remote-preview
+ * interval) against THAT shape of load, not the worst-case "everyone hammers
+ * simultaneously the whole time" the other scripts default to.
+ *
+ * Usage matches the other scripts — ROOM/TARGET_URL/TOOLS env vars, --vus,
+ * --duration:
+ *   k6 run -e ROOM=x -e TARGET_URL=ws://127.0.0.1:8030 --vus=6 --duration=90s \
+ *     testing/sporadic_stress_test.js
  */
 
 import ws from 'k6/ws';
@@ -17,43 +32,31 @@ import {
   performSelectionTransform, sendUndo, parseInbound,
 } from './_k6_actions.js';
 
-const broadcastLatency = new Trend('broadcast_latency_medium');
+const broadcastLatency = new Trend('broadcast_latency_sporadic');
 
 export const options = {
-  vus: 20,
-  duration: '2m',
+  vus: 6,
+  duration: '90s',
 };
 
+// How long a VU stays in each phase. Wide enough that overlap between VUs is
+// the exception, not the rule, at typical VU counts (6-8) — with independent
+// random phase lengths and a randomized starting offset into the first phase,
+// bots drift in and out of sync rather than lining up.
+const ACTIVE_MS = [5000, 18000];
+const IDLE_MS = [8000, 30000];
+
 const SPECIAL_ACTIONS = ['blendSwap', 'selectionTransform', 'floodFill', 'undo'];
-/**
- * Chance an idle bot fires a special action instead of drawing. These run
- * regardless of `TOOLS`, so `-e TOOLS=brush` alone does NOT give a pure brush
- * workload — a selection transform runs a homography, a flood fill a worker
- * readback, and either can outweigh every stroke in the run on a weak client.
- * Set `-e SPECIAL_CHANCE=0` to isolate the stroke-relay path.
- */
-const SPECIAL_CHANCE = __ENV.SPECIAL_CHANCE !== undefined
-  ? Number(__ENV.SPECIAL_CHANCE)
-  : 0.18;
+const SPECIAL_CHANCE = 0.18;
 
 const STROKE_LENGTH = [25, 100];
-const STROKE_COUNT  = [2, 7];
+const STROKE_COUNT = [2, 7];
 
 function isStrokeTool(tool) {
   return tool !== Tool.TEXT && tool !== Tool.SELECT &&
          tool !== Tool.FLOODFILL && tool !== Tool.INKDROPPER;
 }
 
-/**
- * Optional tool restriction, e.g. `-e TOOLS=ink,pen`.
- *
- * The bots normally pick uniformly from all 18 tools, so any single tool is
- * ~5.5 % of the traffic — far too little signal to judge a change to one tool's
- * render path against this suite's run-to-run variance. Narrowing the pool
- * amplifies the path under test instead of trying to average the noise away.
- * Unknown names are reported rather than silently dropped: a typo would
- * otherwise fall back to the full set and look like "the change did nothing".
- */
 const TOOL_POOL = (() => {
   const raw = (__ENV.TOOLS || '').trim();
   if (!raw) return ALL_TOOLS;
@@ -66,6 +69,10 @@ const TOOL_POOL = (() => {
   return picked;
 })();
 
+function randBetween([lo, hi]) {
+  return lo + Math.random() * (hi - lo);
+}
+
 export default function () {
   sleep(Math.random() * 3);
 
@@ -77,47 +84,20 @@ export default function () {
 
   const res = ws.connect(url, {}, function (socket) {
     socket.on('open', function () {
-      socket.sendBinary(buildMsg({ t: T.CONNECT, n: `MED_VU_${__VU}` }));
+      socket.sendBinary(buildMsg({ t: T.CONNECT, n: `SPORADIC_VU_${__VU}` }));
 
-      // BOARD_W/BOARD_H default to the historical hardcoded 1080p. They matter
-      // on a larger board: left at 1920x1080 the bots only ever touch the
-      // top-left corner of a 1440p board, which silently changes how much of
-      // the board gets painted and is exactly the kind of thing that makes a
-      // backing-store measurement lie.
       const BOARD_WIDTH = Number(__ENV.BOARD_W || 1920);
       const BOARD_HEIGHT = Number(__ENV.BOARD_H || 1080);
       const REGION_SIZE = Number(__ENV.REGION_SIZE || 350), margin = 100;
 
-      // CLUSTERS=n snaps every bot's home region to one of n fixed, evenly
-      // spaced points instead of a free random position, so painted content
-      // stays confined to a few areas of the board. Needed to exercise the
-      // tiled backing store's sparse case under real multi-user load: bots
-      // scattered freely eventually touch every tile, which measures the dense
-      // case no matter how few users there are. CLUSTERS=0 (default) keeps the
-      // original free-roam behaviour.
-      const CLUSTERS = Number(__ENV.CLUSTERS || 0);
-      let homeX, homeY;
-      if (CLUSTERS > 0) {
-        // Deterministic per-VU assignment so a rerun paints the same areas.
-        const idx = (__VU - 1) % CLUSTERS;
-        const cols = Math.ceil(Math.sqrt(CLUSTERS));
-        const rows = Math.ceil(CLUSTERS / cols);
-        const cx = (idx % cols) + 0.5, cy = Math.floor(idx / cols) + 0.5;
-        homeX = (cx / cols) * BOARD_WIDTH;
-        homeY = (cy / rows) * BOARD_HEIGHT;
-        homeX = Math.max(margin + REGION_SIZE / 2, Math.min(BOARD_WIDTH - margin - REGION_SIZE / 2, homeX));
-        homeY = Math.max(margin + REGION_SIZE / 2, Math.min(BOARD_HEIGHT - margin - REGION_SIZE / 2, homeY));
-      } else {
-        homeX = Math.random() * (BOARD_WIDTH - REGION_SIZE - 2 * margin) + margin + REGION_SIZE / 2;
-        homeY = Math.random() * (BOARD_HEIGHT - REGION_SIZE - 2 * margin) + margin + REGION_SIZE / 2;
-      }
+      const homeX = Math.random() * (BOARD_WIDTH - REGION_SIZE - 2 * margin) + margin + REGION_SIZE / 2;
+      const homeY = Math.random() * (BOARD_HEIGHT - REGION_SIZE - 2 * margin) + margin + REGION_SIZE / 2;
 
       let x = homeX, y = homeY, dx = 0, dy = 0;
-      let state = 0;
+      let drawState = 0; // 0=deciding next stroke, 1=configuring, 2=mid-stroke
       let stateTicks = 0, cycleLength = 0;
       let currentTool = Tool.BRUSH;
       let strokesRemaining = 0;
-      let idleTicks = 0;
       const drawnPoints = [];
       function recordDrawn(px, py) {
         drawnPoints.push({ x: px, y: py });
@@ -127,14 +107,45 @@ export default function () {
         return drawnPoints.length ? drawnPoints[Math.floor(Math.random() * drawnPoints.length)] : null;
       }
 
+      // Independent phase schedule per VU. Starting phase and starting offset
+      // are both randomized so VUs don't all flip together even though every
+      // VU's script starts at roughly the same wall-clock time.
+      let phase = Math.random() < 0.5 ? 'active' : 'idle';
+      let phaseDurationMs = randBetween(phase === 'active' ? ACTIVE_MS : IDLE_MS);
+      // Start already partway into the phase (0-90% through it), rather than
+      // every VU beginning a fresh phase at t=0.
+      let phaseElapsedMs = Math.random() * phaseDurationMs * 0.9;
+      let lastTickAt = Date.now();
+
+      function endStrokeIfActive() {
+        if (drawState === 2) {
+          try { sendUp(socket, sessionIndex); } catch (_) {}
+        }
+        drawState = 0;
+        stateTicks = 0;
+      }
+
       socket.setInterval(function () {
         if (sessionIndex === -1) return;
 
-        if (state === 0) {
-          idleTicks++;
-          if (idleTicks < 10 + Math.floor(Math.random() * 20)) return;
-          idleTicks = 0;
+        const now = Date.now();
+        phaseElapsedMs += now - lastTickAt;
+        lastTickAt = now;
 
+        if (phaseElapsedMs >= phaseDurationMs) {
+          if (phase === 'active') endStrokeIfActive();
+          phase = phase === 'active' ? 'idle' : 'active';
+          phaseDurationMs = randBetween(phase === 'active' ? ACTIVE_MS : IDLE_MS);
+          phaseElapsedMs = 0;
+        }
+
+        // Idle phase: hold the socket open, send nothing — a present-but-not-
+        // drawing user, the case the other stress scripts don't model.
+        if (phase === 'idle') return;
+
+        // Below is medium_stress_test.js's per-tick drawing state machine,
+        // unchanged, just gated to only run during an 'active' phase.
+        if (drawState === 0) {
           if (Math.random() < SPECIAL_CHANCE) {
             const action = pick(SPECIAL_ACTIONS);
             try {
@@ -173,40 +184,40 @@ export default function () {
           y = Math.max(margin, Math.min(BOARD_HEIGHT - margin, targetY));
 
           sendMove(socket, sessionIndex, x, y);
-          state = 1;
+          drawState = 1;
         }
-        else if (state === 1) {
+        else if (drawState === 1) {
           if (currentTool === Tool.TEXT) {
             applyTextWithFont(socket, sessionIndex, x, y, pick(TEXT_PHRASES), pick(FONTS));
             strokesRemaining--;
-            state = 0;
+            drawState = 0;
           } else if (currentTool === Tool.SELECT) {
             performSelectionTransform(socket, sessionIndex, {
               rect: { x: x - 80, y: y - 80, width: 160, height: 160 },
             });
             strokesRemaining--;
-            state = 0;
+            drawState = 0;
           } else if (currentTool === Tool.FLOODFILL) {
             const target = pickDrawnPoint();
             if (target) applyFloodFill(socket, sessionIndex, target.x, target.y, randColor());
             strokesRemaining--;
-            state = 0;
+            drawState = 0;
           } else if (currentTool === Tool.INKDROPPER) {
             strokesRemaining--;
-            state = 0;
+            drawState = 0;
           } else if (isStrokeTool(currentTool)) {
             sendDown(socket, sessionIndex, x, y);
             cycleLength = randInt(STROKE_LENGTH[0], STROKE_LENGTH[1]);
-            state = 2;
+            drawState = 2;
             stateTicks = 0;
             dx = (Math.random() - 0.5) * 8;
             dy = (Math.random() - 0.5) * 8;
           } else {
             strokesRemaining--;
-            state = 0;
+            drawState = 0;
           }
         }
-        else if (state === 2) {
+        else if (drawState === 2) {
           stateTicks++;
           if (stateTicks < cycleLength) {
             dx += (Math.random() - 0.5) * 3;
@@ -229,7 +240,7 @@ export default function () {
           } else {
             sendUp(socket, sessionIndex);
             strokesRemaining--;
-            state = 0;
+            drawState = 0;
           }
         }
       }, 12);
