@@ -118,6 +118,18 @@ export function normalizeTextFont(font) {
   return TEXT_FONT_FAMILIES.has(font) ? font : DEFAULT_TEXT_FONT;
 }
 
+/**
+ * Font stack actually applied to `ctx.font` / CSS `font-family` wherever a text
+ * record is measured, painted, or previewed. Appends the self-hosted Fluent
+ * Emoji Color webfont (see public/fonts/fluentmoji-color) as a fallback so any
+ * emoji typed into the text tool rasterizes identically for every viewer,
+ * regardless of their OS's native emoji font. Only affects code points in the
+ * font's unicode-range — normal glyphs still come from the chosen text font.
+ */
+export function getTextFontStack(font) {
+  return `${normalizeTextFont(font)}, 'Fluent Emoji Color'`;
+}
+
 export function getTextFontDefaults(font) {
   return TEXT_FONT_DEFAULTS.get(normalizeTextFont(font)) || {
     textPositionMultiplier: 0,

@@ -2,7 +2,7 @@
  * @fileoverview Manages UI elements for remote users (cursors, boards, user list entries).
  */
 
-import { normalizeTextFont } from '../config/textFonts.js';
+import { normalizeTextFont, getTextFontStack } from '../config/textFonts.js';
 import { getPreviewTextLayout, getTextLineHeight } from '../utils/textLayout.js';
 import { badgesForUser, renderBadgesInto } from './Badges.js';
 
@@ -689,7 +689,7 @@ export class RemoteUserUI {
     text.style.fontSize = `${userData.size + 5}px`;
     const normalizedFont = normalizeTextFont(userData.font);
     const lineHeight = getTextLineHeight(userData.size + 5, normalizedFont);
-    text.style.fontFamily = normalizedFont;
+    text.style.fontFamily = getTextFontStack(normalizedFont);
     text.style.lineHeight = `${lineHeight}px`;
     const textLayout = getPreviewTextLayout(userData);
     text.style.left = `${textLayout.domLeft}px`;
@@ -701,7 +701,7 @@ export class RemoteUserUI {
 
     const textInput = document.createElement('span');
     textInput.className = `textInput ${id}`;
-    textInput.style.fontFamily = normalizedFont;
+    textInput.style.fontFamily = getTextFontStack(normalizedFont);
     textInput.style.lineHeight = `${lineHeight}px`;
     renderRemotePreviewContent(textInput, userData.text || '');
 
@@ -1395,9 +1395,9 @@ export class RemoteUserUI {
     if (this._shouldSuppressLiveUser(userId)) return;
     const cursorElements = this.cursors.get(userId);
     if (cursorElements?.text) {
-      cursorElements.text.style.fontFamily = normalizeTextFont(font);
+      cursorElements.text.style.fontFamily = getTextFontStack(font);
       if (cursorElements.textInput) {
-        cursorElements.textInput.style.fontFamily = normalizeTextFont(font);
+        cursorElements.textInput.style.fontFamily = getTextFontStack(font);
       }
       const user = window.app?.users?.get(Number(userId));
       if (user) this.updateRemoteTextLayout(userId, user);
@@ -1415,10 +1415,10 @@ export class RemoteUserUI {
     cursorElements.text.style.left = `${layout.domLeft}px`;
     cursorElements.text.style.top = `${layout.domTop}px`;
     cursorElements.text.style.fontSize = `${layout.fontSize}px`;
-    cursorElements.text.style.fontFamily = normalizedFont;
+    cursorElements.text.style.fontFamily = getTextFontStack(normalizedFont);
     cursorElements.text.style.lineHeight = `${lineHeight}px`;
     if (cursorElements.textInput) {
-      cursorElements.textInput.style.fontFamily = normalizedFont;
+      cursorElements.textInput.style.fontFamily = getTextFontStack(normalizedFont);
       cursorElements.textInput.style.lineHeight = `${lineHeight}px`;
     }
   }

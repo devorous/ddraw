@@ -19,6 +19,7 @@ import {
   ensureTextFontsLoaded,
   normalizeTextFont,
   getTextFontLetterSpacing,
+  getTextFontStack,
   TEXT_FONT_OPTIONS
 } from '../config/textFonts.js';
 import {
@@ -2398,10 +2399,10 @@ menuBtn: document.getElementById('menuBtn'),
     this.elements.selfText.style.lineHeight = `${lineHeight}px`;
     const [r, g, b, a] = color;
     this.elements.selfText.style.color = `rgba(${r}, ${g}, ${b}, ${a * a})`;
-    this.elements.selfText.style.fontFamily = normalizedFont;
+    this.elements.selfText.style.fontFamily = getTextFontStack(normalizedFont);
     this.elements.selfText.style.letterSpacing = getTextFontLetterSpacing(normalizedFont);
     if (this.elements.selfTextInput) {
-      this.elements.selfTextInput.style.fontFamily = normalizedFont;
+      this.elements.selfTextInput.style.fontFamily = getTextFontStack(normalizedFont);
       this.elements.selfTextInput.style.lineHeight = `${lineHeight}px`;
       this.elements.selfTextInput.style.letterSpacing = getTextFontLetterSpacing(normalizedFont);
     }

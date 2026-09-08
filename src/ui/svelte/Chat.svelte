@@ -9,20 +9,73 @@
   import WindowTitleBar from './WindowTitleBar.svelte';
 
   const CHAT_POSITION_STORAGE_KEY = 'topdraw-chat-position';
-  const COMPOSER_EMOJIS = [
-    '\u{1F600}', '\u{1F603}', '\u{1F604}', '\u{1F601}', '\u{1F606}', '\u{1F605}',
-    '\u{1F923}', '\u{1F602}', '\u{1F642}', '\u{1F643}', '\u{1F609}', '\u{1F60A}',
-    '\u{1F60D}', '\u{1F970}', '\u{1F618}', '\u{1F60E}', '\u{1F929}', '\u{1F60F}',
-    '\u{1F62D}', '\u{1F97A}', '\u{1F62E}', '\u{1F631}', '\u{1F92F}', '\u{1F525}',
-    '\u2728', '\u{1F4AF}', '\u{1F389}', '\u{1F44F}', '\u{1F44D}', '\u{1F44E}',
-    '\u{1F64C}', '\u{1F64F}', '\u{1F91D}', '\u2764\uFE0F', '\u{1F49C}',
-    '\u{1F496}', '\u{1F4A5}', '\u{1F4A8}', '\u{1F4A6}', '\u{1F440}', '\u{1F440}',
-    '\u{1F914}', '\u{1F928}', '\u{1F910}', '\u{1F92D}', '\u{1F92B}', '\u{1F4A9}',
-    '\u{1F921}', '\u{1F975}', '\u{1F976}', '\u{1F383}', '\u{1F921}', '\u{1F47D}',
-    '\u{1F47B}', '\u{1F480}', '\u{1F916}', '\u{1F47A}', '\u{1F47F}', '\u{1F32E}',
-    '\u{1F34C}', '\u{1F355}', '\u{1F354}', '\u{1F36A}', '\u{1F37F}', '\u{1F3A8}',
-    '\u{1F3AE}', '\u{1F3C6}', '\u{1F3C1}', '\u{1F680}', '\u{1F4A1}', '\u{1F44C}'
+  const COMPOSER_EMOJI_CATEGORIES = [
+    {
+      label: 'Gestures',
+      emojis: [
+        '\u{1F44D}', '\u{1F44E}', '\u{1F44F}', '\u{1F64C}', '\u{1F64F}', '\u{1F91D}',
+        '\u270C\uFE0F', '\u{1F91E}', '\u{1F91F}', '\u{1F918}', '\u{1F44C}', '\u{1F919}',
+        '\u{1F4AA}', '\u{1F44B}', '\u{1F590}\uFE0F', '\u270B', '\u{1F44A}', '\u{1F450}'
+      ]
+    },
+    {
+      label: 'Reactions',
+      emojis: [
+        '\u{1F62D}', '\u{1F621}', '\u{1F92C}', '\u{1F92F}', '\u{1F92B}', '\u{1F92D}',
+        '\u{1F975}', '\u{1F976}', '\u{1F92E}', '\u{1F974}', '\u{1F630}', '\u{1F633}'
+      ]
+    },
+    {
+      label: 'Smileys',
+      emojis: [
+        '\u{1F600}', '\u{1F603}', '\u{1F604}', '\u{1F601}', '\u{1F606}', '\u{1F605}',
+        '\u{1F923}', '\u{1F602}', '\u{1F642}', '\u{1F643}', '\u{1F609}', '\u{1F60A}',
+        '\u{1F60D}', '\u{1F970}', '\u{1F618}', '\u{1F60E}', '\u{1F929}', '\u{1F60F}',
+        '\u{1F914}', '\u{1F928}', '\u{1F910}', '\u{1F644}', '\u{1F62C}', '\u{1F62E}',
+        '\u{1F631}', '\u{1F92F}', '\u{1F62D}', '\u{1F97A}', '\u{1F634}', '\u{1F971}'
+      ]
+    },
+    {
+      label: 'Hearts',
+      emojis: [
+        '\u2764\uFE0F', '\u{1F9E1}', '\u{1F49B}', '\u{1F49A}', '\u{1F499}', '\u{1F49C}',
+        '\u{1F5A4}', '\u{1F90D}', '\u{1F90E}', '\u{1F494}', '\u{1F495}', '\u{1F49E}',
+        '\u{1F493}', '\u{1F497}', '\u{1F496}', '\u{1F498}', '\u{1F49D}', '\u{1F48C}'
+      ]
+    },
+    {
+      label: 'Celebration',
+      emojis: [
+        '\u{1F389}', '\u{1F38A}', '\u2728', '\u{1F388}', '\u{1F381}', '\u{1F973}',
+        '\u{1F37E}', '\u{1F382}', '\u{1F3C6}', '\u{1F947}', '\u{1F525}', '\u{1F4AF}'
+      ]
+    },
+    {
+      label: 'Food',
+      emojis: [
+        '\u{1F355}', '\u{1F354}', '\u{1F35F}', '\u{1F32D}', '\u{1F37F}', '\u{1F369}',
+        '\u{1F36A}', '\u{1F370}', '\u{1F9C1}', '\u{1F36B}', '\u{1F366}', '\u2615',
+        '\u{1F34E}', '\u{1F34C}', '\u{1F347}'
+      ]
+    },
+    {
+      label: 'Animals',
+      emojis: [
+        '\u{1F436}', '\u{1F431}', '\u{1F42D}', '\u{1F439}', '\u{1F430}', '\u{1F98A}',
+        '\u{1F43B}', '\u{1F43C}', '\u{1F428}', '\u{1F42F}', '\u{1F981}', '\u{1F438}',
+        '\u{1F427}', '\u{1F98B}', '\u{1F984}'
+      ]
+    },
+    {
+      label: 'Objects',
+      emojis: [
+        '\u{1F3AE}', '\u{1F3A8}', '\u{1F3B8}', '\u{1F3A7}', '\u{1F680}', '\u{1F4A1}',
+        '\u2B50', '\u{1F308}', '\u2600\uFE0F', '\u{1F319}', '\u26A1', '\u{1F440}',
+        '\u{1F4A4}', '\u{1F916}', '\u{1F47B}'
+      ]
+    }
   ];
+  const COMPOSER_EMOJIS = COMPOSER_EMOJI_CATEGORIES.flatMap((category) => category.emojis);
   const REACTION_EMOJIS = [
     '\u{1F44D}', '\u2764\uFE0F', '\u{1F525}', '\u{1F602}', '\u{1F62E}', '\u{1F3A8}',
     '\u{1F44F}', '\u2728', '\u{1F389}', '\u{1F60D}', '\u{1F914}', '\u{1F44E}',
@@ -264,10 +317,6 @@
 
   function isChatMessage(message) {
     return message?.type === 'message' || message?.type === 'image';
-  }
-
-  function rankedComposerEmojis() {
-    return [...new Set([...COMPOSER_EMOJIS, ...REACTION_EMOJIS])];
   }
 
   function hoverReactionEmojis(limit = 6) {
@@ -2789,15 +2838,19 @@
 
           {#if showEmojiPicker}
             <div class="emoji-picker">
-              <div class="emoji-picker-section">
-                <span class="reaction-picker-label">Emojis</span>
-                <div class="reaction-picker-grid composer-emoji-grid">
-                  {#each rankedComposerEmojis() as emoji (emoji)}
-                    <button class="emoji-btn" onclick={() => insertEmoji(emoji)} type="button">
-                      {emoji}
-                    </button>
-                  {/each}
-                </div>
+              <div class="emoji-picker-sections">
+                {#each COMPOSER_EMOJI_CATEGORIES as category (category.label)}
+                  <div class="emoji-picker-section">
+                    <span class="reaction-picker-label">{category.label}</span>
+                    <div class="reaction-picker-grid composer-emoji-grid">
+                      {#each category.emojis as emoji (emoji)}
+                        <button class="emoji-btn" onclick={() => insertEmoji(emoji)} type="button">
+                          {emoji}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/each}
               </div>
             </div>
           {/if}
@@ -3017,7 +3070,7 @@
     border-radius: 10px;
     overflow: hidden;
     box-shadow: var(--chat-shadow);
-    font-family: 'Inter', sans-serif;
+    font-family: 'Inter', sans-serif, 'Fluent Emoji Color';
     isolation: isolate;
   }
 
@@ -5106,10 +5159,24 @@
       inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
   }
 
+  .emoji-picker-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 240px;
+    overflow-y: auto;
+    padding-right: 0.1rem;
+  }
+
   .emoji-picker-section {
     display: flex;
     flex-direction: column;
     gap: 0.24rem;
+  }
+
+  .emoji-picker-section + .emoji-picker-section {
+    padding-top: 0.5rem;
+    border-top: 1px solid color-mix(in srgb, var(--border-subtle) 70%, transparent);
   }
 
   .reaction-picker-label {
@@ -5128,10 +5195,7 @@
   }
 
   .composer-emoji-grid {
-    max-height: 164px;
-    overflow-y: auto;
     padding-top: 0.1rem;
-    padding-right: 0.1rem;
   }
 
   .emoji-picker .emoji-btn {
