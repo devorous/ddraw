@@ -2,6 +2,7 @@
   import { appState } from '../../state.svelte.js';
   import { T } from '../../../shared/MessageTypes.js';
   import { showAppConfirm } from '../ConfirmDialog.js';
+  import { dragScrollAction } from '../../utils/dragScroll.js';
 
   const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -804,7 +805,7 @@
         <button class="room-settings-close" onclick={() => hide()} title="Close">&times;</button>
       </div>
 
-      <div class="room-settings-body">
+      <div class="room-settings-body" use:dragScrollAction>
         {#if showMessage}
           <div class="room-settings-message {messageType}">{message}</div>
         {/if}
@@ -1512,6 +1513,12 @@
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+    cursor: grab;
+  }
+
+  .room-settings-body.drag-scrolling {
+    cursor: grabbing;
+    user-select: none;
   }
 
   .room-settings-message {

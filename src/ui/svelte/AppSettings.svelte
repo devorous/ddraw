@@ -1,6 +1,7 @@
 <script>
   import { appState } from '../../state.svelte.js';
   import { isMobile } from '../../platform/mobile.js';
+  import { dragScrollAction } from '../../utils/dragScroll.js';
   import Dropdown from './Dropdown.svelte';
   import {
     createDefaultAppPreferences,
@@ -777,7 +778,7 @@ function getChatOpacity() {
         <button class="app-settings-close" type="button" onclick={hide} title="Close">&times;</button>
       </div>
 
-      <div class="app-settings-body">
+      <div class="app-settings-body" use:dragScrollAction>
         {#if showMessage}
           <div class="app-settings-message {messageType}">{message}</div>
         {/if}
@@ -1267,6 +1268,12 @@ function getChatOpacity() {
     min-height: 0;
     padding: 1rem 1.1rem 1.1rem;
     overflow-y: auto;
+    cursor: grab;
+  }
+
+  .app-settings-body.drag-scrolling {
+    cursor: grabbing;
+    user-select: none;
   }
 
   .app-settings-message {

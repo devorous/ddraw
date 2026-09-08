@@ -12,6 +12,7 @@ import { isMobile } from '../platform/mobile.js';
 import { appState } from '../state.svelte.js';
 import { getRightClickActionsForTool, getRightClickActionLabel } from '../config/rightClickActions.js';
 import { replaceSelectWithDropdown } from './dropdownMount.svelte.js';
+import { enableDragScroll } from '../utils/dragScroll.js';
 import PointerSlider from './svelte/PointerSlider.svelte';
 import {
   DEFAULT_TEXT_FONT,
@@ -85,6 +86,7 @@ export class UI {
     this.setRemoteUsersConnected(false);
     this.layerPreview.init();
     this.setupScrollIndicator();
+    this.initDragScrollPanels();
     this.initResizableSections();
     this.setupSidebarResizers();
 
@@ -786,6 +788,16 @@ export class UI {
 
     document.documentElement.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
     document.documentElement.style.setProperty('--tools-width', `${toolsWidth}px`);
+  }
+
+  /**
+   * Lets a mouse/pen drag pan the tool options panel's scrollable sections,
+   * matching touch's native pan gesture (pens don't get one).
+   */
+  initDragScrollPanels() {
+    ['userList', 'toolSliders', 'toolExtras'].forEach((id) => {
+      enableDragScroll(document.getElementById(id));
+    });
   }
 
   /**

@@ -939,6 +939,17 @@ html[data-mobile='true'] {
   font-weight: 600;
 }
 
+#userList,
+#toolSliders,
+#toolExtras {
+  cursor: grab;
+
+  &.drag-scrolling {
+    cursor: grabbing;
+    user-select: none;
+  }
+}
+
 #toolSliders,
 #toolExtras {
   padding: 10px;
