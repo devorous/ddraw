@@ -73,6 +73,9 @@ export class Moderation {
    * @returns {boolean}
    */
   canClearCanvas() {
+    // Offline (Draw Alone): there's no server to authorize against and no one
+    // else's board to protect — it's just the local user's own canvas.
+    if (window.app?.isOfflineMode) return true;
     return this.roomRole >= 4 || this.globalRole >= 8;  // room MOD(4)+ or global HOLY(8)+
   }
 
@@ -198,6 +201,15 @@ export class Moderation {
       window.app?.scheduleTopbarCollapseUpdate?.();
     }
 
+    // Clearing is authorized separately from general mod powers (it also
+    // covers offline/Draw Alone, which has no mod role at all), so the button
+    // gets its own injection path rather than riding along with isMod().
+    const canClear = this.canClearCanvas();
+    if (canClear && !document.getElementById('clearBtn')) {
+      this._injectClearButton();
+      window.app?.scheduleTopbarCollapseUpdate?.();
+    }
+
     const elements = document.querySelectorAll('.modOnly');
     elements.forEach(el => {
       if (this.isMod()) {
@@ -211,11 +223,11 @@ export class Moderation {
     // so App owns it, but a role change still has to re-evaluate it.
     window.app?.refreshDebugButton?.();
 
-    // Clearing is authorized separately from general mod powers, so keep the
-    // button in step with the server rather than with isMod() — otherwise it
-    // is offered to someone whose clear the server will reject.
+    // Keep the button in step with the server (or offline) rather than with
+    // isMod() — otherwise it is offered to someone whose clear the server
+    // will reject, and the .modOnly loop above would hide it offline.
     const clearWrap = document.querySelector('.clearConfirmWrap');
-    if (clearWrap) clearWrap.classList.toggle('visible', this.canClearCanvas());
+    if (clearWrap) clearWrap.classList.toggle('visible', canClear);
 
     // Admin-only elements (role assignment submenu) need ADMIN(5)+
     const adminElements = document.querySelectorAll('.adminOnly');
@@ -239,6 +251,31 @@ export class Moderation {
   }
 
   /**
+   * Creates the toolbar Clear button. Separate from _injectModUI() since
+   * canClearCanvas() authorizes independently of isMod() (offline included).
+   */
+  _injectClearButton() {
+    const collapsible = document.getElementById('collapsibleBtns');
+    if (!collapsible || document.getElementById('clearBtn')) return;
+
+    const clearWrap = document.createElement('div');
+    clearWrap.className = 'clearConfirmWrap modOnly';
+
+    const clearBtn = document.createElement('a');
+    clearBtn.className = 'btn';
+    clearBtn.id = 'clearBtn';
+    clearBtn.textContent = 'Clear';
+    clearBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      this._showClearPrompt(clearBtn);
+    });
+    clearWrap.appendChild(clearBtn);
+
+    // Insert before the first child so Clear appears first
+    collapsible.insertBefore(clearWrap, collapsible.firstChild);
+  }
+
+  /**
    * Dynamically create and inject mod-only toolbar buttons and mod panel.
    * Called once when user is first confirmed as mod+.
    */
@@ -250,29 +287,7 @@ export class Moderation {
       return;
     }
 
-    // --- Left-side toolbar buttons (Clear) ---
-    const collapsible = document.getElementById('collapsibleBtns');
-    if (collapsible && !document.getElementById('clearBtn')) {
-      const fragment = document.createDocumentFragment();
-
-      // Clear button (inserted at the start of collapsible)
-      const clearWrap = document.createElement('div');
-      clearWrap.className = 'clearConfirmWrap modOnly';
-
-      const clearBtn = document.createElement('a');
-      clearBtn.className = 'btn';
-      clearBtn.id = 'clearBtn';
-      clearBtn.textContent = 'Clear';
-      clearBtn.addEventListener('click', (event) => {
-        event.preventDefault();
-        this._showClearPrompt(clearBtn);
-      });
-      clearWrap.appendChild(clearBtn);
-      fragment.appendChild(clearWrap);
-
-      // Insert before the first child so Clear appears first
-      collapsible.insertBefore(fragment, collapsible.firstChild);
-    }
+    this._injectClearButton();
 
     // --- Bans button, right side between Save and Room Settings ---
     const roomSettingsBtn = document.getElementById('roomSettingsBtn');

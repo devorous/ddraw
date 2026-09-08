@@ -125,6 +125,10 @@
 
   let visible = $derived(appState.roomSettingsVisible);
   let roomData = $derived(appState.currentRoomData);
+  // Offline (Draw Alone): there's no server room behind this dialog, so only
+  // the fields that apply purely locally (background colour) are shown, and
+  // Save applies them straight to the board instead of sending ROOM_UPDATE.
+  let offlineMode = $derived(!!roomData?.offline);
   let userRole = $derived(appState.selfRole);
   let globalRole = $derived(appState.selfGlobalRole);
   let currentUsername = $derived(appState.username);
@@ -198,7 +202,7 @@
   });
 
   $effect(() => {
-    if (!visible || activeTab !== TAB_GENERAL) return;
+    if (!visible || activeTab !== TAB_GENERAL || offlineMode) return;
     const key = roomId || '';
     if (startStateRequestedKey === key) return;
     startStateRequestedKey = key;
@@ -419,7 +423,19 @@
   }
 
   function save() {
-    if (!roomData || !wsClient || saving) return;
+    if (!roomData || saving) return;
+
+    if (offlineMode) {
+      board?.setBackgroundColor(backgroundColor);
+      // Persisted locally (keyed by browser, not room id — offline rooms are
+      // re-generated every session) so the next Draw Alone session picks it up.
+      window.app?.saveOfflineRoomSettings?.({ backgroundColor });
+      displayMessage('Applied to this board', 'success');
+      ui?.showToast('Board settings applied', 2000);
+      return;
+    }
+
+    if (!wsClient) return;
 
     const trimmedDesc = description.trim();
     const clampedMaxUsers = Math.max(2, Math.min(60, maxUsers));
@@ -795,12 +811,14 @@
     >
       <div class="room-settings-header">
         <div class="room-settings-header-main">
-          <h3>Room Settings</h3>
-          <div class="room-settings-tabs" role="tablist" aria-label="Room settings sections">
-            <button class:active={activeTab === TAB_GENERAL} class="room-settings-tab" onclick={() => switchTab(TAB_GENERAL)} type="button">General</button>
-            <button class:active={activeTab === TAB_FLOATING_GALLERY} class="room-settings-tab" onclick={() => switchTab(TAB_FLOATING_GALLERY)} type="button">Floating Gallery</button>
-            <button class:active={activeTab === TAB_MODERATION} class="room-settings-tab" onclick={() => switchTab(TAB_MODERATION)} type="button">Moderation</button>
-          </div>
+          <h3>Room Settings{offlineMode ? ' (Offline)' : ''}</h3>
+          {#if !offlineMode}
+            <div class="room-settings-tabs" role="tablist" aria-label="Room settings sections">
+              <button class:active={activeTab === TAB_GENERAL} class="room-settings-tab" onclick={() => switchTab(TAB_GENERAL)} type="button">General</button>
+              <button class:active={activeTab === TAB_FLOATING_GALLERY} class="room-settings-tab" onclick={() => switchTab(TAB_FLOATING_GALLERY)} type="button">Floating Gallery</button>
+              <button class:active={activeTab === TAB_MODERATION} class="room-settings-tab" onclick={() => switchTab(TAB_MODERATION)} type="button">Moderation</button>
+            </div>
+          {/if}
         </div>
         <button class="room-settings-close" onclick={() => hide()} title="Close">&times;</button>
       </div>
@@ -811,22 +829,24 @@
         {/if}
 
         {#if activeTab === TAB_GENERAL}
-          <div class="form-grid">
-            <div class="form-group">
-              <label for="roomId">Room ID</label>
-              <input type="text" id="roomId" value={roomId} disabled class="room-input disabled" />
+          {#if !offlineMode}
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="roomId">Room ID</label>
+                <input type="text" id="roomId" value={roomId} disabled class="room-input disabled" />
+              </div>
+
+              <div class="form-group">
+                <label for="roomOwner">Owner</label>
+                <input type="text" id="roomOwner" value={ownerUsername} disabled class="room-input disabled" />
+              </div>
             </div>
 
             <div class="form-group">
-              <label for="roomOwner">Owner</label>
-              <input type="text" id="roomOwner" value={ownerUsername} disabled class="room-input disabled" />
+              <label for="roomDescription">Description</label>
+              <textarea id="roomDescription" bind:value={description} class="room-textarea" placeholder="Room description..." rows="3"></textarea>
             </div>
-          </div>
-
-          <div class="form-group">
-            <label for="roomDescription">Description</label>
-            <textarea id="roomDescription" bind:value={description} class="room-textarea" placeholder="Room description..." rows="3"></textarea>
-          </div>
+          {/if}
 
           <div class="form-grid">
             <div class="form-group">
@@ -837,22 +857,25 @@
               </div>
             </div>
 
-            <div class="form-group">
-              <label for="roomVisibility">Visibility</label>
-              <select
-                id="roomVisibility"
-                class="room-input"
-                value={roomPrivate ? 'private' : 'public'}
-                onchange={(e) => roomPrivate = e.currentTarget.value === 'private'}
-              >
-                {#each ROOM_VISIBILITY_OPTIONS as option}
-                  <option value={option.value}>{option.label}</option>
-                {/each}
-              </select>
-              <span class="form-hint">Private rooms don't appear in the room browser.</span>
-            </div>
+            {#if !offlineMode}
+              <div class="form-group">
+                <label for="roomVisibility">Visibility</label>
+                <select
+                  id="roomVisibility"
+                  class="room-input"
+                  value={roomPrivate ? 'private' : 'public'}
+                  onchange={(e) => roomPrivate = e.currentTarget.value === 'private'}
+                >
+                  {#each ROOM_VISIBILITY_OPTIONS as option}
+                    <option value={option.value}>{option.label}</option>
+                  {/each}
+                </select>
+                <span class="form-hint">Private rooms don't appear in the room browser.</span>
+              </div>
+            {/if}
           </div>
 
+          {#if !offlineMode}
           <div class="form-grid">
             <div class="form-group">
               <label for="roomJoinPolicy">Join Policy</label>
@@ -1034,6 +1057,7 @@
               {/if}
             </span>
           </div>
+          {/if}
 
           {#if canShowUnregister()}
             <section class="danger-zone">

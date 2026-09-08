@@ -2515,6 +2515,12 @@ export class DrawingApp {
     // dropped. The fresh offline rolling tape (started below) then snapshots
     // this preserved board as its replay base.
     this.resetRoomState({ preserveRemoteVisuals: true, clearBoard: false });
+    // Restore whatever offline-only room settings (e.g. background colour) were
+    // saved from a previous Draw Alone session, before anything else touches the board.
+    const offlineSettings = this.getOfflineRoomSettings();
+    if (offlineSettings?.backgroundColor) {
+      this.board.setBackgroundColor(offlineSettings.backgroundColor);
+    }
     this.isOfflineMode = true;
     this.connected = false;
     appState.connected = false;
@@ -2548,6 +2554,10 @@ export class DrawingApp {
     this.ui.showCursor();
     this.ui.updateSelfName(offlineUsername);
     this.ui.showConnectionStatus('offline');
+    // Register Room never applies offline; Room Settings and Clear do (both
+    // are local-only in offline mode) — re-evaluate now that isOfflineMode is set.
+    this.updateRoomSettingsButtonVisibility();
+    this.moderation?.updateModVisibility();
 
     this.inputBufferManager.startTickLoop();
     if (!this._visibilityEligibilityHandler && typeof document !== 'undefined') {
@@ -4070,6 +4080,19 @@ export class DrawingApp {
    * Opens the room settings dialog.
    */
   handleRoomSettings() {
+    // Offline (Draw Alone): there's no server room behind this, so open a
+    // synthetic local room object instead of waiting on SETTINGS that will
+    // never arrive. RoomSettings.svelte reads roomData.offline to show only
+    // the fields that apply locally (background colour) and Save applies
+    // them straight to the board.
+    if (this.isOfflineMode) {
+      appState.currentRoomData = { id: this.currentRoomId, offline: true };
+      appState.selfRole = this.selfRole;
+      appState.username = this.self?.username || '';
+      appState.roomSettingsVisible = true;
+      return;
+    }
+
     if (!this.currentRoomData) {
       this.ui.showToast('Room data not loaded yet', 3000);
       return;
@@ -4091,6 +4114,7 @@ export class DrawingApp {
   }
 
   canEditCurrentRoomSettings() {
+    if (this.isOfflineMode) return true;
     if (!this.currentRoomData || !this.wsClient?.connected || !this.currentRoomId) return false;
     const globalish = Math.max((appState.selfGlobalRole || 0), this.selfRole || 0);
     if (globalish >= 8) return true;
@@ -4100,6 +4124,34 @@ export class DrawingApp {
         || (appState.selfRoomRole || 0) >= 5;
     }
     return this.wasCurrentRoomCreatedByThisBrowser();
+  }
+
+  /**
+   * Reads locally-persisted offline (Draw Alone) room settings.
+   * Keyed by browser, not by room id — offline rooms are re-generated every
+   * session (`offline-<timestamp>`), so there is no per-room id to key off.
+   * @returns {object|null}
+   */
+  getOfflineRoomSettings() {
+    try {
+      const raw = localStorage.getItem('topDrawOfflineRoomSettings');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Merges and persists offline room settings for the next Draw Alone session.
+   * @param {object} settings
+   */
+  saveOfflineRoomSettings(settings) {
+    try {
+      const existing = this.getOfflineRoomSettings() || {};
+      localStorage.setItem('topDrawOfflineRoomSettings', JSON.stringify({ ...existing, ...settings }));
+    } catch {
+      // localStorage unavailable (private mode, quota) — settings just won't persist.
+    }
   }
 
   wasCurrentRoomCreatedByThisBrowser() {
@@ -4151,6 +4203,17 @@ export class DrawingApp {
 
     // Use wsClient.connected instead of this.connected since this.connected
     // may not be set yet when auth completes
+    // Offline (Draw Alone): there's no server room to register or own, so
+    // Register Room never applies. Room Settings still opens — handleRoomSettings()
+    // shows an offline-safe local subset — since there's no server round trip to wait on.
+    if (this.isOfflineMode) {
+      if (settingsBtn) settingsBtn.style.display = 'inline-flex';
+      if (registerBtn) registerBtn.style.display = 'none';
+      appState.roomCreatedByThisBrowser = false;
+      this.scheduleTopbarCollapseUpdate();
+      return;
+    }
+
     const isConnected = this.wsClient?.connected && this.currentRoomId;
 
     if (!isConnected) {
