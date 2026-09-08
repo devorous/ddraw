@@ -89,8 +89,7 @@ function applyPendingImageToolChanges(app, sessionIndex, user) {
     app.remoteUserHandler.handlePatternBrushLoad(user, pending.pattern);
   }
   if (pending.confetti) {
-    const confettiTool = app.toolManager?.getTool?.('confetti');
-    confettiTool?.applyNetworkSettings?.(user, pending.confetti);
+    app.remoteUserHandler.handleConfettiBrushLoad(user, pending.confetti);
   }
 
   app._pendingRemoteImageToolChanges.delete(sessionIndex);

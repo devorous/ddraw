@@ -19,8 +19,7 @@ export function setupDrawingHandlers(wrapHandler, app) {
     } else if (data.imageType === 'pattern') {
       remoteUserHandler.handlePatternBrushLoad(user, data.imageData);
     } else if (data.imageType === 'confetti') {
-      const confettiTool = app.toolManager.getTool('confetti');
-      confettiTool?.applyNetworkSettings?.(user, data.imageData);
+      remoteUserHandler.handleConfettiBrushLoad(user, data.imageData);
     }
   };
   const queuePendingImageTool = (data) => {

@@ -28,6 +28,24 @@ function colorToString(color, alpha = 1) {
 
 const CONFETTI_SEED_MAX = 0xFFFFFF;
 
+/**
+ * Per-user fields a confetti wire payload owns. Shared by applyNetworkSettings
+ * (which writes them) and RemoteUserHandler.handleConfettiBrushLoad (which
+ * snapshots and restores them around a deferred replay).
+ * @type {ReadonlyArray<string>}
+ */
+export const CONFETTI_STATE_KEYS = Object.freeze([
+  'confettiParticles',
+  'confettiParticleSize',
+  'confettiSizeVariation',
+  'confettiOpacityRandomness',
+  'confettiSpacing',
+  'confettiShape',
+  'confettiColorMode',
+  'confettiRotationMode',
+  'confettiBrush'
+]);
+
 export class ConfettiTool extends Tool {
   constructor(board) {
     super('confetti', board);
@@ -479,8 +497,19 @@ export class ConfettiTool extends Tool {
     return (baseSize * (1 + variation)) / 2;
   }
 
+  /**
+   * URL the particle sprite for `brush` is drawn from, or null when the brush
+   * carries no bitmap at all (the built-in circle/square shapes).
+   * @param {Object|null} brush
+   * @returns {string|null}
+   */
+  getParticleImageUrl(brush) {
+    return brush?.gBrushes?.[0]?.gimpUrl || brush?.previewUrl || brush?.gimpUrl || brush?.url
+      || this.svgContentToDataUrl(brush?.svgContent) || null;
+  }
+
   getParticleImage(brush) {
-    const url = brush?.gBrushes?.[0]?.gimpUrl || brush?.previewUrl || brush?.gimpUrl || brush?.url || this.svgContentToDataUrl(brush?.svgContent);
+    const url = this.getParticleImageUrl(brush);
     if (!url) return null;
     if (this._imageCache.has(url)) return this._imageCache.get(url);
     const image = new Image();
@@ -488,6 +517,34 @@ export class ConfettiTool extends Tool {
     image.src = url;
     this._imageCache.set(url, image);
     return image;
+  }
+
+  /**
+   * Start the sprite decode for `brush` and report whether anything has to wait
+   * on it. drawParticleToContext falls back to a plain circle for an image that
+   * has not decoded yet, so a caller replaying a whole stroke in one burst (a
+   * join tail) has to hold the stamps back until this settles or it bakes the
+   * fallback — see RemoteUserHandler.handleConfettiBrushLoad.
+   *
+   * @param {Object|null} brush - Brush payload as it arrived on the wire.
+   * @returns {Promise<boolean>|null} null when there is nothing to wait for (no
+   *   sprite, or already decoded); otherwise a promise resolving to whether the
+   *   sprite is usable. Never rejects.
+   */
+  preloadParticleImage(brush) {
+    const image = this.getParticleImage(brush);
+    if (!image || image.complete) return null;
+    return new Promise((resolve) => {
+      const settle = () => {
+        image.removeEventListener('load', settle);
+        image.removeEventListener('error', settle);
+        resolve(image.complete && image.naturalWidth > 0);
+      };
+      // Listeners, not `onload`/`onerror`: getParticleImage owns those, and its
+      // requestUpdate is what repaints the board once the sprite lands.
+      image.addEventListener('load', settle);
+      image.addEventListener('error', settle);
+    });
   }
 
   getTintedParticleImage(image, brush, color) {
@@ -595,17 +652,7 @@ export class ConfettiTool extends Tool {
     }
     if (!data || data.kind !== 'confetti') return null;
 
-    for (const key of [
-      'confettiParticles',
-      'confettiParticleSize',
-      'confettiSizeVariation',
-      'confettiOpacityRandomness',
-      'confettiSpacing',
-      'confettiShape',
-      'confettiColorMode',
-      'confettiRotationMode',
-      'confettiBrush'
-    ]) {
+    for (const key of CONFETTI_STATE_KEYS) {
       if (data[key] !== undefined) user[key] = data[key];
     }
     if (data.initialSeed !== undefined) {

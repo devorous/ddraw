@@ -13,6 +13,7 @@ import { RemoteSelectionHandler } from './RemoteSelectionHandler.js';
 import { setUserLayerContent, syncUserLayerDisplay, releaseUserLayer } from './userLayerPresence.js';
 import { releaseRemoteScratch } from './remoteScratchReclaim.js';
 import { normalizeBlendBakeMode } from '../../shared/blendBakeMode.js';
+import { CONFETTI_STATE_KEYS } from '../tools/ConfettiTool.js';
 
 /**
  * Above this fraction of the board, a mirror-expanded preview rect is worth less
@@ -499,7 +500,7 @@ export class RemoteUserHandler {
 
     const radii = data.rs;
     if (user.tool === 'confetti' && data.confettiData) {
-      this.toolManager.getTool('confetti')?.applyNetworkSettings?.(user, data.confettiData);
+      this.handleConfettiBrushLoad(user, data.confettiData);
     }
 
     // Pattern tool doesn't depend on radii - handle separately
@@ -541,6 +542,16 @@ export class RemoteUserHandler {
       if (user.tool === 'pixel' || user.tool === 'imageBrush' || user.tool === 'confetti') {
         if (user.tool === 'imageBrush' && user.imageBrush?._pendingStrokes) {
           user.imageBrush._pendingStrokes.push({ type: 'stamps', pts: [...smoothedPoints] });
+        } else if (user.tool === 'confetti' && user._confettiPendingStrokes) {
+          // Buffer until the particle sprite decodes — see handleConfettiBrushLoad.
+          // The seeds ride along: they are what makes the particle scatter agree
+          // across clients, and re-deriving them at replay time would only match
+          // by luck.
+          user._confettiPendingStrokes.push({
+            type: 'stamps',
+            pts: [...smoothedPoints],
+            seeds: radii ? [...radii] : []
+          });
         } else {
           const tool = this.toolManager.getTool(user.tool);
           if (tool) tool.applyStamps(user, smoothedPoints, radii);
@@ -768,6 +779,10 @@ export class RemoteUserHandler {
         break;
 
       case 'confetti': {
+        if (user._confettiPendingStrokes) {
+          user._confettiPendingStrokes.push({ type: 'move', pos: { ...pos } });
+          break;
+        }
         const confettiTool = this.toolManager.getTool('confetti');
         if (confettiTool) confettiTool.onPointerMove(user, pos);
         break;
@@ -907,7 +922,7 @@ export class RemoteUserHandler {
     if (data.blendMode !== undefined) user.setBlendMode(data.blendMode);
     if (data.blendBakeMode !== undefined) user.setBlendBakeMode(data.blendBakeMode);
     if (user.tool === 'confetti' && data.confettiData) {
-      this.toolManager.getTool('confetti')?.applyNetworkSettings?.(user, data.confettiData);
+      this.handleConfettiBrushLoad(user, data.confettiData);
     }
     user.clearLine();
     // Bounds are per stroke; carrying the last one over would grow the preview
@@ -1072,6 +1087,15 @@ export class RemoteUserHandler {
 
       case 'confetti': {
         if (!user.panning) {
+          if (user._confettiPendingStrokes) {
+            // Buffer until the particle sprite decodes — see handleConfettiBrushLoad.
+            user._confettiPendingStrokes.push({
+              type: 'down',
+              pos: { ...pos },
+              seed: user._confettiStrokeSeed
+            });
+            break;
+          }
           const confettiTool = this.toolManager.getTool('confetti');
           if (confettiTool) confettiTool.onPointerDown(user, pos);
         }
@@ -1155,6 +1179,13 @@ export class RemoteUserHandler {
     // with real pixels and this MU's authoritative seq.
     if (user.tool === 'pattern' && user._patternPendingStrokes) {
       user._patternPendingStrokes.push({ type: 'up', seq });
+      user.mousedown = false;
+      return;
+    }
+
+    // Same for a confetti stroke still waiting on its particle sprite.
+    if (user.tool === 'confetti' && user._confettiPendingStrokes) {
+      user._confettiPendingStrokes.push({ type: 'up', seq });
       user.mousedown = false;
       return;
     }
@@ -2102,6 +2133,101 @@ export class RemoteUserHandler {
         return img;
       });
     }
+  }
+
+  /**
+   * Applies a remote confetti payload, holding that user's stamps back until the
+   * particle sprite has actually decoded.
+   *
+   * ConfettiTool.drawParticleToContext reads the sprite straight off an <img>
+   * and silently falls back to a plain circle whenever it has not decoded yet.
+   * Live, that race is invisible — the payload lands seconds before the stroke.
+   * A join tail is the opposite: it replays a user's whole confetti history in
+   * one burst microseconds after the payload, so the decode lost every time and
+   * the strokes baked as circles. A later manual resync then looked "fixed"
+   * purely because the sprite was in _imageCache by then, decoded. This is the
+   * same race handleBrushLoad and handlePatternBrushLoad already buffer for.
+   *
+   * @param {User} user - The remote user the payload belongs to.
+   * @param {string|Object} confettiData - Wire payload, JSON string or object.
+   * @returns {void}
+   */
+  handleConfettiBrushLoad(user, confettiData) {
+    const tool = this.toolManager.getTool('confetti');
+    if (!user || !tool) return;
+    const applied = tool.applyNetworkSettings?.(user, confettiData);
+    if (!applied) return;
+
+    // Per-move payloads omit the brush entirely (getNetworkSettings'
+    // `includeBrush`): they are mid-stroke tweaks, and re-arming on one would
+    // strand the stroke that is already draining into the current buffer.
+    if (applied.confettiBrush === undefined) return;
+
+    // Never defer our OWN frames. A sync rebuild drives them through this
+    // pipeline too, but our sprite is already decoded locally (it is the gallery
+    // object we have been drawing with), and a deferral that outlived the
+    // rebuild would hand our MU to handleMouseUp's self-echo gate — which
+    // reconciles instead of committing, leaving the stroke open forever.
+    if (user.id === this.app.sessionIndex) return;
+
+    const pending = tool.preloadParticleImage(user.confettiBrush);
+    // Nothing to wait for: a shape-only brush, or a sprite already decoded.
+    if (!pending) return;
+
+    // Settings as this payload left them. A join tail replays a user's brush
+    // switches back to back, so a newer payload routinely lands while this one
+    // is still decoding — the replay has to draw with the state that was in
+    // force when these stamps were made, then hand the newer state back.
+    const settings = {};
+    for (const key of CONFETTI_STATE_KEYS) settings[key] = user[key];
+
+    // Owned by THIS load: decodes finish out of order, and a join tail lands a
+    // second payload while the first is still decoding often enough that reading
+    // `user._confettiPendingStrokes` back at drain time would let the first load
+    // replay the SECOND payload's stamps with the wrong sprite.
+    const buffer = [];
+    user._confettiPendingStrokes = buffer;
+
+    pending.then((usable) => {
+      // Retire the readiness flag first, and only if a newer load has not
+      // already claimed it — anything arriving mid-drain must run live rather
+      // than join a buffer nobody will drain again.
+      if (user._confettiPendingStrokes === buffer) delete user._confettiPendingStrokes;
+
+      // What is live right now — a newer payload, a mid-stroke tweak from an MM,
+      // or (for our own frames on a rebuild) the rich gallery object SyncClient
+      // just put back. Whatever it is, it outranks this payload once the replay
+      // below is done with it.
+      const restore = {};
+      for (const key of CONFETTI_STATE_KEYS) restore[key] = user[key];
+      if (usable) Object.assign(user, settings);
+
+      const entries = buffer.splice(0, buffer.length);
+      for (const entry of entries) {
+        if (entry.type === 'down') {
+          user.mousedown = true;
+          // onPointerDown consumes (and deletes) the stroke seed, so it has to
+          // be the one this MD carried, not whatever a later MD left behind.
+          if (entry.seed !== undefined) user._confettiStrokeSeed = entry.seed;
+          tool.onPointerDown(user, entry.pos);
+        } else if (entry.type === 'move') {
+          user.mousedown = true;
+          tool.onPointerMove(user, entry.pos);
+        } else if (entry.type === 'stamps') {
+          user.mousedown = true;
+          tool.applyStamps(user, entry.pts, entry.seeds);
+        } else if (entry.type === 'up') {
+          // The buffered MU kept its authoritative seq precisely so the commit
+          // lands in the server's order rather than at seq 0.
+          user.mousedown = true;
+          this.handleMouseUp(user, entry.seq);
+        }
+      }
+
+      // This payload's state only ever existed for the replay above.
+      Object.assign(user, restore);
+      this.board.requestUpdate?.();
+    });
   }
 
   _loadBrushImage(brushData, onLoad, onError) {
