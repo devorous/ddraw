@@ -1,7 +1,24 @@
 /** @fileoverview Curated changelog data for the "What's New" popup, generated from git history. */
 
 export const CHANGELOG = [
-  {v:'v1.15.1-beta', date:'2026-09-07', current:true, items:[
+  {v:'v1.15.2-beta', date:'2026-09-09', current:true, items:[
+    ['added', 'Implemented user profile pages at ddraw.ca/user/<username>'],
+    ['added', 'Implemented timelapse view in the user gallery'],
+    ['improved', 'Offline rooms now have access to room settings and a few other features'],
+    ['fixed', 'Fixed a few issues with login security and checking profile image upload'],
+    ['improved', 'Improved select tool menu and UI'],
+    ['fixed', 'Fixed a bug with glitch blur affecting multiple layers'],
+    ['fixed', 'Fixed some issues with the tutorial UI not working on mobile screens'],
+    ['added', 'Implemented scrolling by dragging while using a tablet for UI'],
+  ], more:[
+    ['improved', 'Tweaked mobile UI layout and fixed some bugs with overlapping elements on mobile'],
+    ['fixed', 'Fixed an issue with confetti brush not syncing properly'],
+    ['fixed', 'Fixed a bug where the image brush gallery was not loading properly'],
+    ['fixed', 'Fixed a bug with dropdown menu z-index in the settings'],
+    ['added', 'Added new emojis and updated their font to be consistent across machines'],
+    ['added', 'Added new Patrick Hand font'],
+  ], moreTotal:6},
+  {v:'v1.15.1-beta', date:'2026-09-07', items:[
     ['added', 'Added a new chat silence feature and the ability for moderators to delete chat messages'],
     ['improved', 'Improved the rendering regions used by the select tool'],
     ['fixed', 'Fixed an issue where unregistered rooms would not have their history/snapshots compressed, leading to excessive memory usage'],
