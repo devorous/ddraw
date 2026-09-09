@@ -256,4 +256,18 @@
     color: var(--text-secondary, #8a8fa8);
     line-height: 1.4;
   }
+
+  /* While the mobile tutorial toast is showing (see TutorialOverlay.svelte),
+     shrink this dialog's own space so it renders below the toast instead of
+     under it. */
+  @media (max-width: 640px), (max-height: 640px) {
+    :global(html[data-tutorial-active='true']) .ranks-backdrop {
+      align-items: flex-start;
+      padding-top: calc(var(--tutorial-toast-bottom, 0px) + 8px);
+    }
+
+    :global(html[data-tutorial-active='true']) .ranks-dialog {
+      max-height: calc(88vh - var(--tutorial-toast-bottom, 0px) - 8px);
+    }
+  }
 </style>

@@ -629,4 +629,19 @@
     white-space: nowrap;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
   }
+
+  /* While the mobile tutorial toast is showing (see TutorialOverlay.svelte),
+     shrink this dialog's own space so it renders below the toast instead of
+     under it. */
+  @media (max-width: 640px), (max-height: 640px) {
+    :global(html[data-tutorial-active='true']) .overlay {
+      align-items: flex-start;
+      padding-top: calc(var(--tutorial-toast-bottom, 0px) + 8px);
+    }
+
+    :global(html[data-tutorial-active='true']) .dialog {
+      max-height: calc(100vh - var(--tutorial-toast-bottom, 0px) - 16px);
+      overflow-y: auto;
+    }
+  }
 </style>

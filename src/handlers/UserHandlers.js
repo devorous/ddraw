@@ -5,7 +5,7 @@ import { debug } from '../utils/debug.js';
 import { appState } from '../state.svelte.js';
 import { BOARD_SIZE_PRESETS, applyRoomBoardSize } from '../config/BoardSizes.js';
 import { applyRoomTiledCanvas } from '../config/TiledCanvasSetting.js';
-import { countryCodeToFlagEmoji } from '../utils/countryFlag.js';
+import { countryCodeToFlagToken } from '../utils/countryFlag.js';
 import { setUserLayerContent } from '../remote/userLayerPresence.js';
 
 const ROLE_NAMES = ['Guest', 'User', 'Trusted', 'Helper', 'Mod', 'Admin', 'Owner', 'Noble', 'Holy', 'Deity'];
@@ -51,7 +51,7 @@ function formatPresenceName(user) {
 }
 
 function formatRoomPresenceMessage(user, verb) {
-  const flag = countryCodeToFlagEmoji(user?.countryCode);
+  const flag = countryCodeToFlagToken(user?.countryCode);
   const namePart = flag ? `${formatPresenceName(user)} ${flag}` : formatPresenceName(user);
   return `${formatPresenceRank(user)} ${namePart} ${verb}`;
 }

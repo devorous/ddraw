@@ -127,7 +127,17 @@
       target: '[data-tut="layer-1"], .layer-btn[data-tut="layer-1"]',
       text: 'There are 3 layers by default. Blend modes are active only on layer 1. Select the blend mode drop down.',
       actionTarget: '[data-tut="layer-1"], .layer-btn[data-tut="layer-1"]',
-      actionLabel: 'Click Layer 1, then press Next'
+      actionLabel: 'Click Layer 1, then press Next',
+      // On mobile/touch the always-expanded layer list (target above) is
+      // display:none - BoardMenu swaps in a collapsed .layer-dropdown-wrap
+      // instead. Open it here so the step has something to spotlight; harmless
+      // on desktop since that dropdown stays display:none there regardless.
+      // Deferred a tick: BoardMenu closes boardMenuOpen on any click outside
+      // .board-menu, and the click that navigates to this step (Next, a dot,
+      // the mini switcher) is still bubbling to that document listener when
+      // beforeEnter runs - setting it synchronously would open and
+      // immediately re-close it within the same click.
+      beforeEnter: () => { setTimeout(() => { appState.boardMenuOpen = 'layers'; }, 0); }
     },
     {
       section: 'Basic Tutorial',
@@ -465,12 +475,22 @@
   let targetMissing = $state(false);
   let toastPosition = $state(null);
   let topbarBottom = $state(0);
+  // Auto placement computed from the spotlighted target's rect (see
+  // updateToastPlacement) - keeps the toast from covering whatever it's
+  // pointing at, whether that's a small button or a large floating panel
+  // (board viewer, mirror region panel, recorder panel, ...). null values
+  // mean "no override, use the default top-of-screen position".
+  let toastAutoTop = $state(null);
+  let toastAutoBottom = $state(null);
+  let toastAutoMaxHeight = $state(null);
   let dragState = null;
+  let toastEl;
   let rafId = null;
   let mutationObserver = null;
   let preparedStep = null;
   let revealedTopbarMenu = null;
   let revealedToolGroups = new Set();
+  let revealedMobileSidebar = false;
 
   let visibleSteps = $derived(steps.filter((step) => (!step.when || step.when()) && (!activeSection || step.section === activeSection)));
   let currentStep = $derived(visibleSteps[index] || visibleSteps[visibleSteps.length - 1]);
@@ -530,6 +550,17 @@
 
   function isVisible(el) {
     if (!el) return false;
+    // checkVisibility (with opacityProperty) walks ancestors, catching e.g. the
+    // mobile tool options sidebar - it's laid out and `display:flex` even while
+    // collapsed (opacity:0, pointer-events:none), so a plain display/visibility
+    // check here would happily spotlight a control the user can't actually see.
+    if (typeof el.checkVisibility === 'function') {
+      try {
+        return el.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true });
+      } catch {
+        // Fall through to the manual check below.
+      }
+    }
     const style = getComputedStyle(el);
     const bounds = el.getBoundingClientRect();
     return style.display !== 'none' && style.visibility !== 'hidden' && bounds.width > 0 && bounds.height > 0;
@@ -575,12 +606,27 @@
     revealedToolGroups.add(group);
   }
 
+  // On mobile the tool option controls (brush mode, sliders, locks, fill/
+  // pattern/font panels, blend controls, ...) all live inside #toolOptions,
+  // which MobileLayoutController keeps collapsed (opacity:0, pointer-events:
+  // none - still laid out, so it isn't a no-op for isVisible without the
+  // checkVisibility fix above) until the user taps the active tool again.
+  // Open it for any step that targets something inside it, the same way a
+  // spotlighted hamburger-menu item opens #collapsibleBtns.
+  function openMobileSidebarForTarget(target) {
+    const toolOptions = target?.closest?.('#toolOptions');
+    if (!toolOptions || !toolOptions.classList.contains('collapsed')) return;
+    window.app?.ui?.setSidebarCollapsed(false);
+    revealedMobileSidebar = true;
+  }
+
   function revealTargetContainers(step = currentStep) {
     const selectors = [step?.target, step?.fallbackTarget].filter(Boolean);
     for (const selector of selectors) {
       for (const target of document.querySelectorAll(selector)) {
         openTopbarMenuForTarget(target);
         openToolGroupForTarget(target);
+        openMobileSidebarForTarget(target);
       }
     }
   }
@@ -593,6 +639,11 @@
       group.classList.remove('is-open');
     }
     revealedToolGroups = new Set();
+
+    if (revealedMobileSidebar) {
+      window.app?.ui?.setSidebarCollapsed(true);
+      revealedMobileSidebar = false;
+    }
   }
 
   function findTargets(step = currentStep) {
@@ -634,6 +685,27 @@
     if (step?.target?.includes('replay-settings')) {
       appState.appSettingsVisible = false;
     }
+    if (step?.target?.includes('layer-1') && appState.boardMenuOpen === 'layers') {
+      appState.boardMenuOpen = null;
+    }
+  }
+
+  // Publishes the tutorial toast's live bottom edge as a CSS var + marks
+  // <html> with data-tutorial-active, so other floating dialogs/menus (app
+  // settings, room settings, ranks, history, render dialog, ...) can shrink
+  // their own available space to render below the toast on mobile instead of
+  // overlapping it - see the `[data-tutorial-active]` rules in each of those
+  // components' styles.
+  function updateTutorialCssVars() {
+    const root = document.documentElement;
+    if (!active || !toastEl) {
+      root.style.removeProperty('--tutorial-toast-bottom');
+      delete root.dataset.tutorialActive;
+      return;
+    }
+    root.dataset.tutorialActive = 'true';
+    const bottom = toastEl.getBoundingClientRect().bottom;
+    root.style.setProperty('--tutorial-toast-bottom', `${Math.ceil(bottom)}px`);
   }
 
   function updateTopbarBottom() {
@@ -653,6 +725,7 @@
 
     revealTargetContainers(currentStep);
     updateTopbarBottom();
+    updateTutorialCssVars();
 
     // While an `awaitTool` step is still gated (tool not yet picked), keep the
     // spotlight on the tool button - not the canvas - so the user knows where
@@ -665,27 +738,62 @@
 
     if (!targets) {
       rect = null;
-      return;
+    } else {
+      const rects = targets.map((target) => target.getBoundingClientRect());
+      const bounds = {
+        top: Math.min(...rects.map((item) => item.top)),
+        left: Math.min(...rects.map((item) => item.left)),
+        right: Math.max(...rects.map((item) => item.right)),
+        bottom: Math.max(...rects.map((item) => item.bottom))
+      };
+      bounds.width = bounds.right - bounds.left;
+      bounds.height = bounds.bottom - bounds.top;
+      const pad = 3;
+      const top = Math.max(0, bounds.top - pad);
+      const left = Math.max(0, bounds.left - pad);
+      rect = {
+        top,
+        left,
+        width: Math.min(window.innerWidth - left, bounds.width + pad * 2),
+        height: Math.min(window.innerHeight - top, bounds.height + pad * 2)
+      };
     }
 
-    const rects = targets.map((target) => target.getBoundingClientRect());
-    const bounds = {
-      top: Math.min(...rects.map((item) => item.top)),
-      left: Math.min(...rects.map((item) => item.left)),
-      right: Math.max(...rects.map((item) => item.right)),
-      bottom: Math.max(...rects.map((item) => item.bottom))
-    };
-    bounds.width = bounds.right - bounds.left;
-    bounds.height = bounds.bottom - bounds.top;
-    const pad = 3;
-    const top = Math.max(0, bounds.top - pad);
-    const left = Math.max(0, bounds.left - pad);
-    rect = {
-      top,
-      left,
-      width: Math.min(window.innerWidth - left, bounds.width + pad * 2),
-      height: Math.min(window.innerHeight - top, bounds.height + pad * 2)
-    };
+    updateToastPlacement();
+  }
+
+  // Keeps the toast from covering whatever the current step is spotlighting.
+  // Picks whichever side (below or above the target) has more room, docks the
+  // toast there, and caps its height to that space - so a large floating
+  // panel (board viewer, mirror region panel, recorder panel, a dialog that
+  // isn't fully covered by the per-component overrides below, ...) always
+  // has the toast sitting next to it rather than on top of it. Falls back to
+  // the plain top-of-screen position when there's no target rect, or when
+  // neither side has enough room to be usable (e.g. a near-fullscreen
+  // dialog - those get their own space reserved via the
+  // [data-tutorial-active] CSS rules instead, using --tutorial-toast-bottom).
+  function updateToastPlacement() {
+    toastAutoTop = null;
+    toastAutoBottom = null;
+    toastAutoMaxHeight = null;
+    if (!rect) return;
+
+    const gap = 10;
+    const topBound = topbarBottom + 8;
+    const bottomBound = window.innerHeight - 8;
+    const spaceBelow = bottomBound - (rect.top + rect.height) - gap;
+    const spaceAbove = rect.top - topBound - gap;
+    const minUsable = 140;
+
+    if (spaceBelow >= minUsable && spaceBelow >= spaceAbove) {
+      toastAutoTop = Math.max(topBound, rect.top + rect.height + gap);
+      toastAutoMaxHeight = Math.min(spaceBelow, 460);
+    } else if (spaceAbove >= minUsable) {
+      toastAutoBottom = Math.max(8, window.innerHeight - rect.top + gap);
+      toastAutoMaxHeight = Math.min(spaceAbove, 460);
+    }
+    // else: neither side has room - leave all three null so the toast falls
+    // back to its default top position.
   }
 
   function scheduleSpotlight() {
@@ -731,6 +839,13 @@
       finish();
       return;
     }
+    // stepIsAvailable() above probes each skipped candidate's target via
+    // findTarget(), which reveals containers (mobile sidebar, hamburger menu,
+    // tool groups) as a side effect - clear those before landing on the real
+    // step so a step skipped mid-scan doesn't leave e.g. the mobile tool
+    // options sidebar stuck open. The real step's own reveal runs fresh via
+    // scheduleSpotlight() below.
+    cleanupRevealedContainers();
     index = candidate;
     scheduleSpotlight();
   }
@@ -763,6 +878,9 @@
     while (candidate > 0 && !stepIsAvailable(visibleSteps[candidate])) {
       candidate -= 1;
     }
+    // See moveToIndex() - clear any reveals left behind by probing skipped
+    // candidates before landing on the real step.
+    cleanupRevealedContainers();
     index = candidate;
     scheduleSpotlight();
   }
@@ -900,6 +1018,7 @@
   $effect(() => {
     if (!active) {
       cleanupRevealedContainers();
+      updateTutorialCssVars();
       return;
     }
     scheduleSpotlight();
@@ -1022,10 +1141,15 @@
     <div
       class="tutorialToast"
       class:dragged={!!toastPosition}
-      style={toastPosition ? `left:${toastPosition.x}px;top:${toastPosition.y}px;transform:none;` : `top:${topbarBottom + 8}px;`}
+      style={toastPosition
+        ? `left:${toastPosition.x}px;top:${toastPosition.y}px;transform:none;`
+        : toastAutoBottom != null
+          ? `top:auto;bottom:${toastAutoBottom}px;${toastAutoMaxHeight ? `max-height:${toastAutoMaxHeight}px;` : ''}`
+          : `top:${toastAutoTop ?? (topbarBottom + 8)}px;${toastAutoMaxHeight ? `max-height:${toastAutoMaxHeight}px;` : ''}`}
       role="dialog"
       tabindex="-1"
       aria-label="Tutorial"
+      bind:this={toastEl}
       onpointerdown={handleToastPointerDown}
       onpointermove={handleToastPointerMove}
       onpointerup={handleToastPointerUp}

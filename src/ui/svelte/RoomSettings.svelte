@@ -2174,4 +2174,18 @@
       flex-wrap: wrap;
     }
   }
+
+  /* While the mobile tutorial toast is showing (see TutorialOverlay.svelte),
+     shrink this dialog's own space so it renders below the toast instead of
+     under it. */
+  @media (max-width: 640px), (max-height: 640px) {
+    :global(html[data-tutorial-active='true']) .room-settings-overlay {
+      align-items: flex-start;
+      padding-top: calc(var(--tutorial-toast-bottom, 0px) + 8px);
+    }
+
+    :global(html[data-tutorial-active='true']) .room-settings-dialog {
+      max-height: calc(90vh - var(--tutorial-toast-bottom, 0px) - 8px);
+    }
+  }
 </style>

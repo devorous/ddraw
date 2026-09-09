@@ -174,6 +174,7 @@
             <button
               class="layer-btn"
               class:active={appState.activeLayer === layer.index}
+              data-tut={layer.index === 0 ? 'layer-1' : 'layers'}
               onclick={() => selectLayer(layer.index)}
             >
               {layer.label}

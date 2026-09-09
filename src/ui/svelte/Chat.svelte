@@ -737,6 +737,14 @@
       .join('');
   }
 
+  function renderSystemText(text) {
+    const escaped = String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return escaped.replace(/\[\[FLAG:([A-Z]{2})\]\]/g, (_match, code) => {
+      const cc = code.toLowerCase();
+      return `<img class="chat-flag" src="https://flagcdn.com/20x15/${cc}.png" srcset="https://flagcdn.com/40x30/${cc}.png 2x" width="20" height="15" alt="${code}" title="${code}" loading="lazy">`;
+    });
+  }
+
   function linkify(text) {
     const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const withLinks = escaped.replace(
@@ -2444,7 +2452,7 @@
 
 {#snippet messageContent(message)}
   {#if message.type === 'system'}
-    <p class="message-text">{message.text}</p>
+    <p class="message-text">{@html renderSystemText(message.text)}</p>
   {:else}
     {@const galleryLinks = extractGalleryLinks(message.text)}
     <div class="message-content-row">
@@ -2502,7 +2510,7 @@
     {/if}
     <div class="message-body">
       {#if msg.type === 'system'}
-        <p class="message-line system"><span class="message-text-inline">{msg.text}</span></p>
+        <p class="message-line system"><span class="message-text-inline">{@html renderSystemText(msg.text)}</span></p>
       {:else}
         {#if msg.text}
           <p class="message-line"><span class="message-text-inline">{@html linkify(msg.text)}</span></p>
@@ -4918,6 +4926,16 @@
     width: 1.35em;
     height: 1.35em;
     object-fit: contain;
+  }
+
+  :global(.chat-flag) {
+    display: inline-block;
+    width: 1.2em;
+    height: 0.9em;
+    object-fit: cover;
+    border-radius: 2px;
+    vertical-align: -0.05em;
+    margin: 0 0.1em;
   }
 
   .message-content-row {
