@@ -3488,17 +3488,31 @@ export class DrawingApp {
     const overlay = document.createElement('div');
     overlay.id = 'modOverlay';
     overlay.className = 'modOverlay';
-    overlay.innerHTML = `
-      <div class="modOverlayBox">
-        <h3>${title}</h3>
-        ${reason ? `<p class="modOverlayReason">${reason}</p>` : ''}
-        <button class="btn" id="modOverlayReturnBtn">Return to Room Selection</button>
-      </div>
-    `;
 
+    const box = document.createElement('div');
+    box.className = 'modOverlayBox';
+
+    const heading = document.createElement('h3');
+    heading.textContent = title;
+    box.appendChild(heading);
+
+    if (reason) {
+      const reasonEl = document.createElement('p');
+      reasonEl.className = 'modOverlayReason';
+      reasonEl.textContent = reason;
+      box.appendChild(reasonEl);
+    }
+
+    const returnBtn = document.createElement('button');
+    returnBtn.className = 'btn';
+    returnBtn.id = 'modOverlayReturnBtn';
+    returnBtn.textContent = 'Return to Room Selection';
+    box.appendChild(returnBtn);
+
+    overlay.appendChild(box);
     document.getElementById('boardContainer')?.appendChild(overlay);
 
-    overlay.querySelector('#modOverlayReturnBtn').addEventListener('click', () => {
+    returnBtn.addEventListener('click', () => {
       overlay.remove();
       this.disconnect();
     });

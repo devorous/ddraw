@@ -5,10 +5,13 @@ import { getDB } from './db.js';
 import { getRequestUser, getBearerToken, getUserFromToken } from './authUser.js';
 import { corsHeaders, writeJson, readRequestBody } from './httpUtils.js';
 import { isSupporterActive } from './supporter.js';
+import { INLINE_IMAGE_MIME_TYPES, validateDataUrlImage } from './imageValidation.js';
 
 const CORS_HEADERS = corsHeaders('GET, POST, PATCH, OPTIONS');
 
-const AVATAR_MAX_BYTES = 64 * 1024; // ~64KB after base64 encoding
+const AVATAR_MAX_BYTES = 64 * 1024; // decoded image bytes
+const AVATAR_MAX_DIMENSION = 512;
+const AVATAR_MAX_PIXELS = AVATAR_MAX_DIMENSION * AVATAR_MAX_DIMENSION;
 const PROFILE_BODY_LIMIT = 128 * 1024;
 
 // Cosmetic badges a user may pick for themselves. Keep in sync with the
@@ -154,13 +157,17 @@ export async function handleUpdateProfile(req, res) {
     if (payload.avatar === null || payload.avatar === '') {
       updates.avatar = null;
     } else if (typeof payload.avatar === 'string') {
-      if (!/^data:image\/(png|jpe?g|webp);base64,/i.test(payload.avatar)) {
-        return json(res, 400, { error: 'Avatar must be a base64 image data URL' });
+      const avatarValidation = await validateDataUrlImage(payload.avatar, {
+        maxBytes: AVATAR_MAX_BYTES,
+        maxWidth: AVATAR_MAX_DIMENSION,
+        maxHeight: AVATAR_MAX_DIMENSION,
+        maxPixels: AVATAR_MAX_PIXELS,
+        allowedMimeTypes: INLINE_IMAGE_MIME_TYPES
+      });
+      if (!avatarValidation.ok) {
+        return json(res, 400, { error: avatarValidation.error || 'Invalid avatar image' });
       }
-      if (payload.avatar.length > AVATAR_MAX_BYTES) {
-        return json(res, 413, { error: 'Avatar too large' });
-      }
-      updates.avatar = payload.avatar;
+      updates.avatar = `data:${avatarValidation.mimeType};base64,${avatarValidation.buffer.toString('base64')}`;
     } else {
       return json(res, 400, { error: 'Avatar must be a string or null' });
     }

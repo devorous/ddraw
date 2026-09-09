@@ -42,6 +42,15 @@ function buildRoomCondition(roomId = null) {
 }
 
 /**
+ * Excludes expired timed actions. `expiresAt: null` means permanent, so those
+ * still match. There's no sweeper flipping `active` to false on expiry, so
+ * every check* query must filter this itself or an expired ban/mute stays live.
+ */
+function buildActiveExpiryCondition() {
+  return { $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] };
+}
+
+/**
  * Obfuscates an IP address for display to moderators.
  * Uses the IP identity system to ensure consistent obfuscation.
  *
@@ -80,7 +89,8 @@ export async function checkBan(userId, ip, roomId = null) {
     active: true,
     $and: [
       { $or: conditions },
-      buildRoomCondition(roomId)
+      buildRoomCondition(roomId),
+      buildActiveExpiryCondition()
     ]
   });
 }
@@ -108,7 +118,8 @@ export async function checkMute(userId, ip, roomId = null) {
     active: true,
     $and: [
       { $or: conditions },
-      buildRoomCondition(roomId)
+      buildRoomCondition(roomId),
+      buildActiveExpiryCondition()
     ]
   });
 }
@@ -132,7 +143,8 @@ export async function checkSilence(userId, ip, roomId = null) {
     active: true,
     $and: [
       { $or: conditions },
-      buildRoomCondition(roomId)
+      buildRoomCondition(roomId),
+      buildActiveExpiryCondition()
     ]
   });
 }
@@ -169,7 +181,8 @@ export async function checkShadowBan({
     active: true,
     $and: [
       { $or: conditions },
-      buildRoomCondition(roomId)
+      buildRoomCondition(roomId),
+      buildActiveExpiryCondition()
     ]
   });
 }

@@ -9,6 +9,7 @@ import { getUsernameValidationMessage, isValidUsername, normalizeUsername } from
 import { Role } from './SessionManager.js';
 import { getIpSubnet, mergeHistory, normalizeIdentityPayload, recordConnectionEvent } from './identityTracking.js';
 import { corsHeaders, writeJson, readRequestBody } from './httpUtils.js';
+import { checkBan } from './moderation.js';
 import crypto from 'crypto';
 
 const CORS_HEADERS = corsHeaders('GET, POST, OPTIONS');
@@ -292,6 +293,14 @@ export async function handleAuthLogin(req, res) {
     }
 
     httpRateLimiter.reset(loginKey);
+
+    // Global ban check — matches the WS login path (room-scoped bans don't apply here,
+    // there's no room; MOD+ stay exempt so admins can always recover an account).
+    const banCheck = await checkBan(user._id.toString(), clientIp, null);
+    if (banCheck && (user.role || Role.USER) < Role.MOD) {
+      const expiry = banCheck.expiresAt ? ` until ${banCheck.expiresAt.toISOString()}` : ' permanently';
+      return json(res, 403, { success: false, error: `You are banned${expiry}. Reason: ${banCheck.reason || 'No reason given'}` });
+    }
 
     const ipHistory = mergeHistory(user.ipHistory, clientIp);
     const subnetHistory = mergeHistory(user.subnetHistory, clientSubnet);
