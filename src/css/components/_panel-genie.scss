@@ -1,0 +1,54 @@
+// ========================================
+// Genie minimize/restore effect
+// ========================================
+//
+// Applied by src/ui/svelte/geniePanelAnimation.js to FloatingPalette and the
+// board colour picker's DockablePanel: on hide the panel shrinks/fades toward
+// the button that reopens it, on show it grows back out from that spot.
+// --genie-x/--genie-y are set inline by the JS helper before either class
+// is added.
+
+.genie-out,
+.genie-in {
+  transform-origin: var(--genie-x, 50%) var(--genie-y, 50%);
+}
+
+.genie-out {
+  animation: panelGenieOut 0.22s cubic-bezier(0.4, 0, 0.7, 0.2) forwards;
+}
+
+.genie-in {
+  animation: panelGenieIn 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+@keyframes panelGenieOut {
+  from {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  to {
+    transform: scale(0.05);
+    opacity: 0;
+  }
+}
+
+@keyframes panelGenieIn {
+  from {
+    transform: scale(0.05);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  .genie-out,
+  .genie-in {
+    animation: none;
+  }
+}

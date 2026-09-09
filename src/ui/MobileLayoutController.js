@@ -21,7 +21,13 @@ export class MobileLayoutController {
 
     this.relocateTopbarForMobile();
 
-    // Start with the options overlay closed; only explicit taps open it.
+    // #toolOptions renders open by default (shared desktop markup). App.init()
+    // runs in the background while the landing page is still covering the
+    // board, often seconds before the user actually joins a room, so collapse
+    // it immediately here rather than on a timer - there's nothing to animate
+    // yet since it's hidden behind the landing page regardless. The visible
+    // reveal-then-collapse intro happens later, in playToolOptionsIntro(),
+    // once the board is actually shown to the user.
     ui.setSidebarCollapsed(true);
 
     const tools = document.querySelector('#sideMenu .tools');
@@ -51,6 +57,33 @@ export class MobileLayoutController {
         ui.setSidebarCollapsed(true);
       }
     }, true);
+  }
+
+  /**
+   * Call once the board actually becomes visible to the user (landing page
+   * hidden - both the room-join and offline-mode paths). Briefly shows the
+   * tool options panel, then collapses it with its existing transition and
+   * pulses the toggle button, so newly-arrived users see where their tool
+   * options live instead of the panel just being silently gone.
+   */
+  playToolOptionsIntro() {
+    if (!isMobile()) return;
+    const ui = this.app.ui;
+    ui.setSidebarCollapsed(false);
+    setTimeout(() => {
+      ui.setSidebarCollapsed(true);
+      this._highlightSidebarToggle();
+    }, 450);
+  }
+
+  /** Brief highlight pulse on the sidebar toggle button - see init(). */
+  _highlightSidebarToggle() {
+    const btn = this.app.ui.elements.sidebarToggleBtn;
+    if (!btn) return;
+    btn.classList.remove('toggle-btn-appear');
+    void btn.offsetWidth; // restart the animation if it's still running
+    btn.classList.add('toggle-btn-appear');
+    btn.addEventListener('animationend', () => btn.classList.remove('toggle-btn-appear'), { once: true });
   }
 
   /**

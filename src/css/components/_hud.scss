@@ -43,7 +43,7 @@ html[data-sidebar-side='left'] .viewHud {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 6px;
   width: 80px;
   height: 80px;
   font-family: inherit;
@@ -54,19 +54,23 @@ html[data-sidebar-side='left'] .viewHud {
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all var(--transition-fast);
-  padding: 0;
+  // Bottom-heavy padding so the label isn't crammed against the button's
+  // edge - it needs more room below than the icon needs above it.
+  padding: 8px 4px 10px;
   pointer-events: auto;
 
   @include respond-below(md) {
-    width: 64px;
-    height: 64px;
-    gap: 2px;
+    width: 68px;
+    height: 68px;
+    gap: 4px;
+    padding: 6px 4px 8px;
   }
 
   @include respond-below(sm) {
-    width: 48px;
-    height: 48px;
-    gap: 0;
+    width: 60px;
+    height: 60px;
+    gap: 3px;
+    padding: 5px 3px 7px;
     border-radius: 4px;
   }
 }
@@ -78,6 +82,36 @@ html[data-sidebar-side='left'] .viewHud {
 
 .viewHudBtn:active {
   transform: scale(0.93);
+}
+
+// Brief highlight the moment a HUD button flips from hidden to visible
+// (App._setHudButtonVisible), so newly-available Undo/Redo doesn't just
+// silently appear.
+.viewHudBtn.hud-btn-appear {
+  animation: hudBtnAppear 0.6s ease-out;
+}
+
+@keyframes hudBtnAppear {
+  0% {
+    transform: scale(0.7);
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  }
+  60% {
+    transform: scale(1.08);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-primary) 18%, transparent);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewHudBtn.hud-btn-appear {
+    animation: none;
+  }
 }
 
 .hudBtnIcon {
@@ -94,19 +128,24 @@ html[data-sidebar-side='left'] .viewHud {
   }
 }
 
-.hudBtnIcon img {
+// Icons are inline <svg width="40" height="40" ...> markup - without these
+// rules the hard-coded attributes win at every breakpoint and the icon stops
+// scaling down with the button, which is what made the small-viewport button
+// feel cramped no matter how the button itself was sized.
+.hudBtnIcon img,
+.hudBtnIcon svg {
   display: block;
   width: 40px;
   height: 40px;
 
   @include respond-below(md) {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
   }
 
   @include respond-below(sm) {
-    width: 20px;
-    height: 20px;
+    width: 26px;
+    height: 26px;
   }
 }
 

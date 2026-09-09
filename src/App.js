@@ -2413,6 +2413,7 @@ export class DrawingApp {
     if (this.landingPage) {
       this.landingPage.selectRoom(resolvedRoomId);
       this.landingPage.hide();
+      this.mobileLayout.playToolOptionsIntro();
     }
 
     const embedMode = typeof document !== 'undefined' && document.documentElement?.dataset?.embed === 'true';
@@ -2548,6 +2549,7 @@ export class DrawingApp {
 
     if (this.landingPage) {
       this.landingPage.hide();
+      this.mobileLayout.playToolOptionsIntro();
     }
 
     this.ui.hideOverlay();
@@ -5079,7 +5081,6 @@ export class DrawingApp {
       existing?.remove();
       if (this.ui?.elements) {
         this.ui.elements.debugBtn = null;
-        this.ui.elements.debugText = null;
       }
       this.scheduleTopbarCollapseUpdate?.();
       return;
@@ -5089,10 +5090,7 @@ export class DrawingApp {
     const debugBtn = document.createElement('a');
     debugBtn.className = 'btn';
     debugBtn.id = 'debugBtn';
-    // The label keeps "Debug" alongside the state: updateDebugModeDisplay only
-    // rewrites the .devOption span, so replacing the whole label with ON/OFF
-    // would leave the button unnamed once it has been toggled.
-    debugBtn.innerHTML = 'Debug <span class="devOption">OFF</span>';
+    debugBtn.textContent = 'Debug';
     debugBtn.addEventListener('click', () => this.handleToggleDebugMode());
 
     // Sit after Clear when a moderator has one, so the toolbar order is the
@@ -5106,7 +5104,6 @@ export class DrawingApp {
 
     if (this.ui?.elements) {
       this.ui.elements.debugBtn = debugBtn;
-      this.ui.elements.debugText = debugBtn.querySelector('.devOption');
     }
     // A button appearing mid-session changes the toolbar width.
     this.scheduleTopbarCollapseUpdate?.();
@@ -7140,8 +7137,22 @@ export class DrawingApp {
       lm.layerGroups.some(g => g.strokeStack.some(r => r.userId === userId));
     const canRedo = (lm.redoStackByUser.get(userId) ?? []).length > 0;
 
-    hudUndoBtn.style.display = canUndo ? '' : 'none';
-    hudRedoBtn.style.display = canRedo ? '' : 'none';
+    this._setHudButtonVisible(hudUndoBtn, canUndo);
+    this._setHudButtonVisible(hudRedoBtn, canRedo);
+  }
+
+  // Toggles a HUD undo/redo button's visibility, playing a brief highlight
+  // animation the moment it goes from hidden to visible (e.g. the first
+  // stroke on the board making Undo available) so it doesn't just silently
+  // pop into existence.
+  _setHudButtonVisible(btn, visible) {
+    const wasHidden = btn.style.display === 'none';
+    btn.style.display = visible ? '' : 'none';
+    if (visible && wasHidden) {
+      btn.classList.remove('hud-btn-appear');
+      void btn.offsetWidth; // restart the animation if it's still running
+      btn.classList.add('hud-btn-appear');
+    }
   }
 
   // Keyboard handlers

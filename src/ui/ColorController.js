@@ -83,10 +83,17 @@ export class ColorController {
       };
 
       const getWheelDiameter = (container) => {
-        const bounds = container.getBoundingClientRect();
+        // clientWidth (the layout content-box) rather than
+        // getBoundingClientRect() - the board picker's DockablePanel plays a
+        // CSS transform: scale() genie animation when it opens/closes, and
+        // getBoundingClientRect() reports the transformed (visually shrunk)
+        // rect while that's still running. A ResizeObserver-triggered
+        // recalculation mid-animation would otherwise measure the wheel at
+        // that shrunk size and get stuck there, since nothing re-measures it
+        // once the animation finishes and the box isn't actually resized.
         const styles = getComputedStyle(container);
         const horizontalPadding = parseFloat(styles.paddingLeft || '0') + parseFloat(styles.paddingRight || '0');
-        const availableWidth = Math.floor((bounds.width || container.clientWidth || 0) - horizontalPadding);
+        const availableWidth = Math.floor((container.clientWidth || container.getBoundingClientRect().width || 0) - horizontalPadding);
         const maxDiameter = container.classList.contains('boardColorPicker') ? 160 : 200;
         const minDiameter = container.classList.contains('boardColorPicker') ? 44 : 120;
         return Math.max(minDiameter, Math.min(maxDiameter, availableWidth));

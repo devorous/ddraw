@@ -5,6 +5,7 @@
     FLOATING_PALETTE_SLOT_COUNT,
     setFloatingPaletteVisibility
   } from '../../state.svelte.js';
+  import { playGenieOut, playGenieIn } from './geniePanelAnimation.js';
 
   let {
     onColorSelect = null,
@@ -57,13 +58,31 @@
     }));
   });
 
-  function hidePanel() {
-    if (paletteId) {
-      setFloatingPaletteVisibility(paletteId, false);
-    } else {
-      appState.recentPaletteVisible = false;
-    }
+  // Both the Recents palette and every custom floating palette reopen from
+  // the same "Palettes" menu trigger in ColorPalette.svelte - that's the
+  // genie target for all of them.
+  function getGenieTarget() {
+    return document.querySelector('[aria-label="Manage floating palettes"]');
   }
+
+  function hidePanel() {
+    const applyHide = () => {
+      if (paletteId) {
+        setFloatingPaletteVisibility(paletteId, false);
+      } else {
+        appState.recentPaletteVisible = false;
+      }
+    };
+    playGenieOut(panel, getGenieTarget(), applyHide);
+  }
+
+  let wasVisible = visible;
+  $effect(() => {
+    if (visible && !wasVisible) {
+      playGenieIn(panel, getGenieTarget());
+    }
+    wasVisible = visible;
+  });
 
   function selectColor(color) {
     appState.currentColor = [...color];
@@ -294,13 +313,15 @@
     <button
       type="button"
       class="palette-close"
-      title="Hide palette"
-      aria-label="Hide palette"
+      title="Minimize (reopen from the Palettes menu)"
+      aria-label="Minimize palette"
       onclick={hidePanel}
       onpointerdown={(event) => event.stopPropagation()}
     >
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+      <!-- A minus, not an X/chevron: this minimizes to the Palettes menu, it
+           doesn't delete or collapse the panel in place. -->
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M5 12h14" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" />
       </svg>
     </button>
   </div>

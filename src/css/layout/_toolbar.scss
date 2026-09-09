@@ -220,7 +220,6 @@
 }
 
 .mirrorOption,
-.devOption,
 .zoomPercent {
   padding: 0 2px;
   font-size: 12px;
@@ -232,14 +231,6 @@
 .zoomPercent {
   min-width: 42px;
   font-variant-numeric: tabular-nums;
-}
-
-.devOption {
-  color: var(--text-muted);
-}
-
-.devOption.active {
-  color: var(--accent-primary);
 }
 
 .right {
@@ -593,6 +584,15 @@ html[data-mobile='true'] .boardBtns {
     min-width: 240px;
     max-height: calc(100dvh - 60px);
     overflow-y: auto;
+
+    // Applied by TutorialOverlay while this menu is spotlighted: the dropdown
+    // opens in the same spot right under the topbar as the tutorial toast, and
+    // on mobile the toast can't be dragged out of the way. Shrinking the menu
+    // leaves room so the toast (moved below the menu's bottom edge) still fits
+    // on screen instead of being pushed past the viewport.
+    &.tutorial-shrink {
+      max-height: calc(100dvh - 230px);
+    }
 
     // The slim-bar icon-collapse for #roomsBtn out-specifies the menu's
     // generic .btnIcon rule; re-hide its icon inside the menu.

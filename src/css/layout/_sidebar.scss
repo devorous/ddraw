@@ -383,6 +383,35 @@ html[data-sidebar-side='left'] .sidebarToggleBtn .panelIcon {
   transform: scaleX(-1);
 }
 
+// Brief highlight the moment the tool options panel auto-collapses on
+// mobile load (MobileLayoutController._highlightSidebarToggle), pointing at
+// the button that brings it back. Mirrors .viewHudBtn.hud-btn-appear.
+.sidebarToggleBtn.toggle-btn-appear {
+  animation: sidebarToggleAppear 0.6s ease-out;
+}
+
+@keyframes sidebarToggleAppear {
+  0% {
+    transform: scale(0.7);
+    color: var(--accent-primary);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  }
+  60% {
+    transform: scale(1.12);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-primary) 18%, transparent);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebarToggleBtn.toggle-btn-appear {
+    animation: none;
+  }
+}
+
 .fullscreenBtn.is-fullscreen {
   color: var(--accent-primary);
 }

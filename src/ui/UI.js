@@ -967,7 +967,6 @@ menuBtn: document.getElementById('menuBtn'),
       toolOptions: document.getElementById('toolOptions'),
 
       debugBtn: null, // injected dynamically by App.refreshDebugButton()
-      debugText: null, // injected dynamically
       debugOverlay: document.getElementById('debugOverlay'),
       perfSettingsBtn: null, // injected dynamically by Moderation._injectModUI(),
 
@@ -2201,12 +2200,11 @@ menuBtn: document.getElementById('menuBtn'),
    * @param {boolean} enabled - Whether Debug mode is enabled
    */
   updateDebugModeDisplay(enabled) {
-    // debugText is injected dynamically; re-query in case it was added after init
-    const debugText = this.elements.debugText || document.querySelector('.devOption');
-    if (debugText) {
-      this.elements.debugText = debugText;
-      debugText.textContent = enabled ? 'ON' : 'OFF';
-      debugText.classList.toggle('active', enabled);
+    // debugBtn is injected dynamically; re-query in case it was added after init
+    const debugBtn = this.elements.debugBtn || document.getElementById('debugBtn');
+    if (debugBtn) {
+      this.elements.debugBtn = debugBtn;
+      debugBtn.classList.toggle('selected', !!enabled);
     }
   }
 

@@ -539,9 +539,10 @@ export function initSvelteUI(app) {
         visibilitySource: appState,
         visibleKey: 'boardColorPickerVisible',
         forceVisibleKey: 'boardColorPickerForceVisible',
-        hideLabel: 'Hide color picker',
+        hideLabel: 'Minimize (reopen with the pop-out button)',
         moveLabel: 'Move color picker',
-        resizeLabel: 'Resize color picker'
+        resizeLabel: 'Resize color picker',
+        genieTargetSelector: '.colorPickerPopoutButton'
       }
     });
   }

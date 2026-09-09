@@ -553,6 +553,13 @@
     if (!canReveal) return;
 
     menu.classList.add('show');
+    // On mobile the dropdown opens directly beneath the topbar - the same spot
+    // the tutorial toast wants. Shrinking it (see .tutorial-shrink in
+    // _toolbar.scss) leaves room so the toast (repositioned below the menu in
+    // updateTopbarBottom) doesn't have to sit off-screen or on top of it.
+    if (document.documentElement.dataset.mobile === 'true') {
+      menu.classList.add('tutorial-shrink');
+    }
     revealedTopbarMenu = menu;
   }
 
@@ -579,7 +586,7 @@
   }
 
   function cleanupRevealedContainers() {
-    revealedTopbarMenu?.classList.remove('show');
+    revealedTopbarMenu?.classList.remove('show', 'tutorial-shrink');
     revealedTopbarMenu = null;
 
     for (const group of revealedToolGroups) {
@@ -631,19 +638,21 @@
 
   function updateTopbarBottom() {
     const topbar = document.querySelector('.boardBtns');
-    if (topbar) {
-      const bounds = topbar.getBoundingClientRect();
-      topbarBottom = Math.max(0, bounds.bottom);
-    } else {
-      topbarBottom = 0;
+    let bottom = topbar ? Math.max(0, topbar.getBoundingClientRect().bottom) : 0;
+    // If the tutorial revealed the hamburger dropdown (mirror/settings/save/
+    // record/rooms), it opens in the same spot below the topbar the toast
+    // wants - push the toast below the menu instead of overlapping it.
+    if (revealedTopbarMenu && isVisible(revealedTopbarMenu)) {
+      bottom = Math.max(bottom, revealedTopbarMenu.getBoundingClientRect().bottom);
     }
+    topbarBottom = bottom;
   }
 
   function updateSpotlight() {
     if (!active) return;
 
-    updateTopbarBottom();
     revealTargetContainers(currentStep);
+    updateTopbarBottom();
 
     // While an `awaitTool` step is still gated (tool not yet picked), keep the
     // spotlight on the tool button - not the canvas - so the user knows where

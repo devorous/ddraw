@@ -1,4 +1,6 @@
 <script>
+  import { playGenieOut, playGenieIn } from './geniePanelAnimation.js';
+
   let {
     panelId = 'dockablePanel',
     panelClass = 'dockablePanel',
@@ -9,13 +11,16 @@
     forceVisibleKey = 'forceVisible',
     compactQuery = '(max-width: 768px), (max-height: 650px)',
     ariaLabel = 'Dockable panel',
-    hideLabel = 'Hide panel',
+    hideLabel = 'Minimize panel',
     moveLabel = 'Move panel',
     resizeLabel = 'Resize panel',
     minSize = 96,
     maxSize = 236,
     defaultSize = 116,
-    margin = 1
+    margin = 1,
+    // CSS selector for the button that reopens this panel - used to aim the
+    // genie minimize/restore animation. No animation plays if omitted.
+    genieTargetSelector = null
   } = $props();
 
   let panel = $state(null);
@@ -208,11 +213,26 @@
     window.addEventListener('pointercancel', handleUp);
   }
 
+  function getGenieTarget() {
+    return genieTargetSelector ? document.querySelector(genieTargetSelector) : null;
+  }
+
   function hidePanel() {
     if (!visibilitySource) return;
-    visibilitySource[visibleKey] = false;
-    visibilitySource[forceVisibleKey] = false;
+    const applyHide = () => {
+      visibilitySource[visibleKey] = false;
+      visibilitySource[forceVisibleKey] = false;
+    };
+    playGenieOut(panel, getGenieTarget(), applyHide);
   }
+
+  let wasVisible = visible;
+  $effect(() => {
+    if (visible && !wasVisible) {
+      playGenieIn(panel, getGenieTarget());
+    }
+    wasVisible = visible;
+  });
 
   $effect(() => {
     if (typeof window === 'undefined' || !visible || !panel) {
@@ -270,8 +290,10 @@
     onclick={hidePanel}
     onpointerdown={(event) => event.stopPropagation()}
   >
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+    <!-- A minus, not an X/chevron: this minimizes the panel toward its
+         reopen button rather than closing or collapsing it in place. -->
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M5 12h14" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" />
     </svg>
   </button>
 
