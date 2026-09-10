@@ -137,7 +137,14 @@ export default defineConfig(({ command }) => ({
         globIgnores: ['**/brushes/**', '**/snapshots/**'],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         navigateFallback: '/go/index.html',
-        navigateFallbackDenylist: [/^\/api/, /^\/ws/, /^\/gallery/, /^\/chat/, /^\/board-viewer/, /^\/user/],
+        // Denylist is inverted on purpose: only /, /go, /embed and /demo are
+        // virtual routes meant to fall back to the cached app shell. Every
+        // other top-level path (gallery, chat, user, board, messenger, api,
+        // ws, download, or a plain typo/junk path) has its own real page or
+        // needs a live network fetch — for a returning visitor with this SW
+        // already installed, those must still reach the network (and 404
+        // there if nothing matches) instead of silently reopening the app.
+        navigateFallbackDenylist: [/^\/(?!go(?:\/|$))(?!embed(?:\/|$))(?!demo\/?$)(?!$).+$/],
         cleanupOutdatedCaches: true,
         runtimeCaching: [
           {
