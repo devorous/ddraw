@@ -72,8 +72,26 @@ export class LandingPage {
       return;
     }
 
+    // /embed, /embed/<room> and /demo boot straight into the canvas (see
+    // getEmbedTarget() in main.js) — main.js drives that flow directly, so
+    // this landing page must stay hidden rather than popping over the top of it.
+    if (this._isEmbedBoot()) {
+      return;
+    }
+
     this.show();
     this.updateConnectionStatus('disconnected');
+  }
+
+  /**
+   * Whether the current URL is an embed-style boot (/embed, /embed/<room>, or
+   * /demo) that skips the landing page. Kept in sync with getEmbedTarget() in
+   * main.js and the pre-paint check in go/index.html.
+   * @returns {boolean}
+   */
+  _isEmbedBoot() {
+    const path = window.location.pathname;
+    return /^\/embed(\/|$)/.test(path) || /^\/demo\/?$/.test(path);
   }
 
   /**

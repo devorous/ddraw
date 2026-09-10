@@ -41,6 +41,9 @@
   // App.js's several join/resync code paths individually.
   function maybeShow() {
     if (visible) return;
+    // /embed and /demo are throwaway, no-login sessions — a "what's new" popup
+    // has nothing to do with why someone landed there.
+    if (document.documentElement.dataset.embed === 'true') return;
     if (storageGet(DISABLED_KEY) === '1') return;
     const version = currentVersion();
     if (!version) return;

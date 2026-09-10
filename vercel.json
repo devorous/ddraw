@@ -20,6 +20,8 @@
     { "source": "/go/(.*)", "destination": "/go/index.html" },
     { "source": "/embed", "destination": "/go/index.html" },
     { "source": "/embed/(.*)", "destination": "/go/index.html" },
+    { "source": "/demo", "destination": "/go/index.html" },
+    { "source": "/demo/", "destination": "/go/index.html" },
     {
       "source": "/gallery/:id([a-f0-9]{24})",
       "has": [

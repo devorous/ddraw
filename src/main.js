@@ -132,9 +132,14 @@ window.updateLandingShellStatus = updateShellStatus;
 
 /**
  * Detects embed mode from the URL: /embed or /embed/<roomName>.
+ * /demo is the same boot path but always forces the offline board — it's the
+ * no-login "try it now" link, not a room-join shortcut.
  * @returns {{embed: boolean, room: string|null}}
  */
 function getEmbedTarget() {
+  const demoMatch = window.location.pathname.match(/^\/demo\/?$/);
+  if (demoMatch) return { embed: true, room: 'offline' };
+
   const match = window.location.pathname.match(/^\/embed(?:\/([a-zA-Z0-9_-]+))?\/?$/);
   if (!match) return { embed: false, room: null };
   return { embed: true, room: match[1] || null };

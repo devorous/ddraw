@@ -170,11 +170,14 @@ export default defineConfig(({ command }) => ({
       name: 'go-spa-fallback',
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
-          // Serve go/index.html for /go/* and /embed(/*) paths (SPA fallback).
-          // The embed variant boots straight into the canvas (see src/main.js).
+          // Serve go/index.html for /go/*, /embed(/*), and /demo paths (SPA
+          // fallback). Both variants boot straight into the canvas (see
+          // src/main.js) — /demo always forces the offline board.
           if (req.url.startsWith('/go/') && !req.url.includes('.')) {
             req.url = '/go/index.html';
           } else if (/^\/embed(\/|$|\?)/.test(req.url) && !req.url.split('?')[0].includes('.')) {
+            req.url = '/go/index.html';
+          } else if (/^\/demo\/?(\?|$)/.test(req.url)) {
             req.url = '/go/index.html';
           }
           next();

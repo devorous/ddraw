@@ -45,3 +45,4 @@ testing/ddraw/undo_after_snapshot_*.ddraw
 # writes a raw Chrome trace, and those are ~85 MB apiece — 2 GB after a handful
 # of before/after comparisons. Quote the numbers in the plan doc instead.
 testing/devtools/perf-results/
+.vercel

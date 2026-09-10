@@ -23,9 +23,10 @@
           document.documentElement.dataset.mobile = 'true';
           if (hasTauri && isAndroid) document.documentElement.dataset.androidApp = 'true';
         }
-        // Embed mode (/embed or /embed/<room>): boot straight into the canvas,
-        // skip the landing page. Set pre-paint so [data-embed] CSS never flashes.
-        if (/^\/embed(\/|$)/.test(location.pathname)) {
+        // Embed mode (/embed or /embed/<room>), and /demo (always-offline "try
+        // it now" link): boot straight into the canvas, skip the landing page.
+        // Set pre-paint so [data-embed] CSS never flashes.
+        if (/^\/embed(\/|$)/.test(location.pathname) || /^\/demo\/?$/.test(location.pathname)) {
           document.documentElement.dataset.embed = 'true';
         }
       })();
