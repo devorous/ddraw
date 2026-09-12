@@ -1749,7 +1749,6 @@
                 <span class="card-badge">NSFW</span>
                 {#if !isNsfwRevealed(item)}
                   <button class="censor-overlay" onclick={(e) => { e.stopPropagation(); revealNsfw(item); }} aria-label="Reveal censored image">
-                    <span>Censored</span>
                     <strong>Reveal</strong>
                   </button>
                 {/if}
@@ -2395,10 +2394,7 @@
     font-size: clamp(1.5rem, 3vw, 2rem);
     letter-spacing: -0.02em;
     margin-bottom: 0.5rem;
-    background: linear-gradient(135deg, var(--text) 0%, var(--accent) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    color: var(--text);
   }
   header h1.ggallery {
     font-family: 'Fredoka', sans-serif;
@@ -2406,8 +2402,6 @@
     font-size: clamp(2.2rem, 5vw, 3.4rem);
     line-height: 1;
     letter-spacing: -0.02em;
-    background: none;
-    -webkit-text-fill-color: initial;
     color: var(--accent);
     transform: rotate(-2deg);
     display: inline-block;
@@ -2757,9 +2751,37 @@
     font-size: 0.72rem;
     color: var(--text-dim);
   }
+  /* The overlay is the button, but only this pill looks like one, so the
+     hover/focus states are driven off the overlay rather than the pill. */
   .censor-overlay strong {
-    font-size: 0.85rem;
+    font-size: 0.78rem;
     font-weight: 600;
+    padding: 0.42rem 0.95rem;
+    border-radius: 999px;
+    border: 1.5px solid var(--accent);
+    background: rgba(0, 0, 0, 0.55);
+    color: var(--accent);
+    transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+  .censor-overlay:hover strong,
+  .censor-overlay:focus-visible strong {
+    background: var(--accent);
+    color: #000;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  }
+  .censor-overlay:active strong {
+    transform: translateY(0);
+    box-shadow: none;
+  }
+  .censor-overlay:focus-visible {
+    outline: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .censor-overlay strong { transition: none; }
+    .censor-overlay:hover strong,
+    .censor-overlay:focus-visible strong { transform: none; }
   }
 
   .card-badge {
@@ -3832,7 +3854,27 @@
     font-size: 0.7rem;
     cursor: pointer;
   }
-  .reveal strong { color: var(--yellow); font-size: 0.85rem; }
+  .reveal strong {
+    font-size: 0.78rem;
+    padding: 0.35rem 0.85rem;
+    border-radius: 999px;
+    border: 1.5px solid var(--accent);
+    background: rgba(0, 0, 0, 0.55);
+    color: var(--accent);
+    transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  }
+  .reveal:hover strong,
+  .reveal:focus-visible strong {
+    background: var(--accent);
+    color: #000;
+    transform: translateY(-1px);
+  }
+  .reveal:focus-visible { outline: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal strong { transition: none; }
+    .reveal:hover strong,
+    .reveal:focus-visible strong { transform: none; }
+  }
 
   .post-body { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
   .post-meta {

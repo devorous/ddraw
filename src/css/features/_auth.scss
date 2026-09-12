@@ -842,7 +842,7 @@ body.desktop-window-chrome #overlay {
 #loginOfflineBtn:hover {
   border-color: var(--accent-primary);
   color: var(--accent-primary);
-  background: rgba(0, 212, 170, 0.05);
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
   border-style: solid;
 }
 

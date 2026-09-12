@@ -582,9 +582,13 @@ export class SaveMode {
     // wsClient has no public `roomId` — the app tracks the joined room as
     // `currentRoomId` (falls back through currentRoomData.id for parity with
     // how the rest of the app reads the room, then 'lobby' if truly none).
-    const roomTag = this._normalizeTag(
-      this.app.currentRoomId || this.app.currentRoomData?.id || 'lobby'
-    );
+    // Draw Alone has no shared room, and its id is a throwaway
+    // `offline-<timestamp>`, so seed no room tag at all there.
+    const roomTag = this.app.isOfflineMode
+      ? ''
+      : this._normalizeTag(
+          this.app.currentRoomId || this.app.currentRoomData?.id || 'lobby'
+        );
 
     this.galleryTags = [];
     for (const tag of [this.usernameTag, roomTag]) {

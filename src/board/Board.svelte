@@ -912,7 +912,27 @@
     font-size: 0.7rem;
     cursor: pointer;
   }
-  .reveal strong { color: var(--yellow); font-size: 0.85rem; }
+  .reveal strong {
+    font-size: 0.78rem;
+    padding: 0.35rem 0.85rem;
+    border-radius: 999px;
+    border: 1.5px solid var(--accent);
+    background: rgba(0, 0, 0, 0.55);
+    color: var(--accent);
+    transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  }
+  .reveal:hover strong,
+  .reveal:focus-visible strong {
+    background: var(--accent);
+    color: #000;
+    transform: translateY(-1px);
+  }
+  .reveal:focus-visible { outline: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal strong { transition: none; }
+    .reveal:hover strong,
+    .reveal:focus-visible strong { transform: none; }
+  }
 
   .post-body { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
   .post-meta {

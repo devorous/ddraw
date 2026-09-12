@@ -138,7 +138,10 @@ export class SaveController {
       // into its own tag field and passes autoRoomTag:false, so a user who
       // removes the chip there doesn't get it added back here.
       const tags = metadata.tags ? [...metadata.tags] : [];
-      if (metadata.autoRoomTag !== false) {
+      // Draw Alone has no shared room behind it — its id is a throwaway
+      // `offline-<timestamp>` — so it gets no room tag, same as
+      // SaveMode._resetTags().
+      if (metadata.autoRoomTag !== false && !this.app.isOfflineMode) {
         // wsClient has no public `roomId` — read the room the app actually
         // tracks, same as SaveMode._resetTags().
         const roomTag = this.app.currentRoomId || this.app.currentRoomData?.id || 'lobby';
