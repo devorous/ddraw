@@ -76,6 +76,70 @@ export function qoiToCanvas(qoi) {
 }
 
 /**
+ * Serialize a selection-erase stroke's restore data.
+ *
+ * The live object holds real HTMLCanvasElements in `snapshots[].canvas` (the
+ * pixels the lift erased, repainted on undo) and, once the stroke has been
+ * undone in this session, a whole live stroke record in `_redoEraseRecord`.
+ * Neither survives leaving the page: `structuredClone` into the .ddraw encode
+ * worker throws DataCloneError on a canvas, and the JSON pass inside the codec
+ * would flatten one to `{}`. So the canvases are QOI-encoded like every other
+ * canvas here, and the transient redo record is dropped — a rebuilt checkpoint
+ * re-derives it the next time the stroke is undone.
+ *
+ * @param {Object|null} rd
+ * @returns {Object|null}
+ */
+function serializeSelectionRestoreData(rd) {
+  if (!rd) return null;
+  return {
+    eraseS: rd.eraseS ? { ...rd.eraseS } : null,
+    eraseLassoPath: Array.isArray(rd.eraseLassoPath)
+      ? rd.eraseLassoPath.map((p) => ({ ...p }))
+      : null,
+    eraseTimestamp: rd.eraseTimestamp,
+    eraseUserId: rd.eraseUserId,
+    snapshots: (rd.snapshots || []).map((snap) => ({
+      groupIdx: snap.groupIdx,
+      x: snap.x,
+      y: snap.y,
+      width: snap.canvas?.width ?? 0,
+      height: snap.canvas?.height ?? 0,
+      qoi: canvasToQoi(snap.canvas),
+    })),
+  };
+}
+
+/**
+ * Inverse of {@link serializeSelectionRestoreData}: decode the snapshot pixels
+ * back into canvases. Snapshots that carry no pixels (fully transparent, so
+ * `canvasToQoi` stored null) are dropped — they are repainted with
+ * `source-over`, where an empty canvas is a no-op anyway.
+ *
+ * @param {Object|null} data
+ * @returns {Object|null}
+ */
+export function importSelectionRestoreData(data) {
+  if (!data) return null;
+  const snapshots = [];
+  for (const snap of data.snapshots || []) {
+    // `snap.canvas` covers an in-memory bundle that never left the page.
+    const canvas = snap.qoi ? qoiToCanvas(snap.qoi) : (snap.canvas ?? null);
+    if (!canvas) continue;
+    snapshots.push({ groupIdx: snap.groupIdx, canvas, x: snap.x, y: snap.y });
+  }
+  return {
+    eraseS: data.eraseS ? { ...data.eraseS } : null,
+    eraseLassoPath: Array.isArray(data.eraseLassoPath)
+      ? data.eraseLassoPath.map((p) => ({ ...p }))
+      : null,
+    eraseTimestamp: data.eraseTimestamp,
+    eraseUserId: data.eraseUserId,
+    snapshots,
+  };
+}
+
+/**
  * Serialize a single stroke record. Returns null when its canvas can't be
  * encoded (zero-area / failure), so the caller can skip it.
  * @param {Object} record
@@ -106,7 +170,9 @@ function serializeStroke(record) {
     out.maskQoi = canvasToQoi(record.maskCanvas);
   }
   // Selection-erase strokes carry restore data that drives undo of the erase.
-  if (record.selectionRestoreData) out.selectionRestoreData = record.selectionRestoreData;
+  if (record.selectionRestoreData) {
+    out.selectionRestoreData = serializeSelectionRestoreData(record.selectionRestoreData);
+  }
   return out;
 }
 

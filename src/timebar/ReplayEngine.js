@@ -16,7 +16,7 @@ import { getTextFontDefaults, getTextFontLetterSpacing } from '../config/textFon
 import { drawReplayCursor } from '../replay/cursorOverlay.js';
 import * as wasm from '../wasm/ddraw_wasm.js';
 import { readQoiDimensions } from '../../shared/qoi.js';
-import { qoiToCanvas } from '../replay/layerStateCodec.js';
+import { qoiToCanvas, importSelectionRestoreData } from '../replay/layerStateCodec.js';
 import { normalizeBlendBakeMode } from '../../shared/blendBakeMode.js';
 import {
   TEXT_OVERLAY_DEFAULT_LIFETIME_MS,
@@ -1856,7 +1856,11 @@ export class ReplayEngine {
       blurRadius: data.blurRadius,
       affectedTiles: data.affectedTiles
     };
-    if (data.selectionRestoreData) record.selectionRestoreData = data.selectionRestoreData;
+    // Snapshot pixels ride along QOI-encoded (see serializeSelectionRestoreData);
+    // decode them back into canvases so undo of this selection commit can repaint.
+    if (data.selectionRestoreData) {
+      record.selectionRestoreData = importSelectionRestoreData(data.selectionRestoreData);
+    }
     if (data.filterType) {
       record.maskCanvas = maskCanvas || canvas;
     }
