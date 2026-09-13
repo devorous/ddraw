@@ -629,6 +629,27 @@ export class SaveMode {
   }
 
   /**
+   * Opens the save mode with the selection preset to a mirror region's exact
+   * bounds, so it doesn't have to be traced by hand. Used by the region's
+   * "Select" control in MirrorRegionController.
+   * @param {{x:number,y:number,width:number,height:number}} region - board px
+   */
+  openWithRegion(region) {
+    this.open();
+    if (!region) return;
+
+    this.mode = 'rectangle';
+    this.activeTool = 'select';
+    this.lassoPoints = [];
+    this.selection = { x: region.x, y: region.y, width: region.width, height: region.height };
+
+    this._drawSnapshot();
+    this._drawSelection();
+    this._updateSelectionInfo();
+    this._syncControlState();
+  }
+
+  /**
    * Opens the save mode, taking a snapshot of the current board.
    */
   open() {

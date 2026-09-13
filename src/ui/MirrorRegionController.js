@@ -879,13 +879,14 @@ export class MirrorRegionController {
     const wrapper = document.createElement('div');
     wrapper.dataset.tut = 'mirror-region-controls';
     wrapper.style.position = 'absolute';
-    wrapper.style.left = `${region.x + region.width - 58}px`;
+    wrapper.style.left = `${region.x + region.width - 120}px`;
     wrapper.style.top = `${Math.max(0, region.y - 28)}px`;
     wrapper.style.display = 'flex';
     wrapper.style.gap = '6px';
     wrapper.style.pointerEvents = 'none';
 
     wrapper.appendChild(this._createControlButton('Edit', () => this.startEditingRegion(region.id), 'rgba(17,24,39,0.92)'));
+    wrapper.appendChild(this._createControlButton('Select', () => this.app.saveController?.openSaveDialogForRegion(region), 'rgba(30,64,175,0.92)'));
     wrapper.appendChild(this._createControlButton('X', () => this.removeRegion(region.id), 'rgba(127,29,29,0.95)'));
 
     return wrapper;

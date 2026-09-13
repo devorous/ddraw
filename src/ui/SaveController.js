@@ -26,6 +26,15 @@ export class SaveController {
     }
   }
 
+  /** Opens the save dialog with the selection preset to a mirror region's exact bounds. */
+  openSaveDialogForRegion(region) {
+    if (!this.app.saveMode || !region) {
+      this.openSaveDialog();
+      return;
+    }
+    this.app.saveMode.openWithRegion(region);
+  }
+
   openSaveDialogForCanvas(sourceCanvas) {
     if (!this.app.saveMode || !sourceCanvas) {
       this.openSaveDialog();
