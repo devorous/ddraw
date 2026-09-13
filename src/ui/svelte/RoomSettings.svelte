@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte';
   import { appState } from '../../state.svelte.js';
   import { T } from '../../../shared/MessageTypes.js';
   import { showAppConfirm } from '../ConfirmDialog.js';
@@ -95,6 +96,7 @@
   let floatingGalleryExcludeIds = $state([]);
   let floatingGalleryVisibleItems = $state([]);
   let floatingGalleryVisibleLoading = $state(false);
+  let floatingGalleryHiddenItems = $state([]);
   let floatingGalleryBrowseItems = $state([]);
   let floatingGalleryBrowseLoading = $state(false);
   let floatingGalleryBrowsePage = $state(1);
@@ -271,8 +273,24 @@
     if (visible && activeTab === TAB_FLOATING_GALLERY && roomData) {
       roomData.id;
       roomData.floatingGalleryIncludeIds;
+      roomData.floatingGalleryExcludeIds;
       fetchFloatingGalleryVisibleItems(true);
     }
+  });
+
+  // An admin can hide a piece from the board while this dialog is open. Fold newly hidden ids into
+  // the draft, or saving the (older) draft would unhide them. Draft edits of already-known ids stay.
+  let seenRoomExcludeIds = [];
+  $effect(() => {
+    const saved = Array.isArray(roomData?.floatingGalleryExcludeIds) ? roomData.floatingGalleryExcludeIds : [];
+    const added = saved.filter(id => !seenRoomExcludeIds.includes(id));
+    seenRoomExcludeIds = [...saved];
+    if (!added.length) return;
+    untrack(() => {
+      floatingGalleryExcludeIds = [...new Set([...floatingGalleryExcludeIds, ...added])];
+      floatingGalleryIncludeIds = floatingGalleryIncludeIds.filter(id => !added.includes(id));
+      floatingGalleryVisibleLoadedKey = '';
+    });
   });
 
   function loadRoomData(data) {
@@ -496,8 +514,7 @@
       roomMaxUsers: clampedMaxUsers,
       roomModInactiveImmune: modInactiveImmune,
       roomJoinPolicy: joinPolicy,
-      roomObscureRequiresRegistered: obscureRequiresRegistered,
-      roomAutoMuteGuests: autoMuteGuests,
+      roomObscureRequiresRegistered: obscureRequiresRegistered,      roomAutoMuteGuests: autoMuteGuests,
       roomAutoMuteVpnUsers: autoMuteVpnUsers,
       roomHideChatNotifications: hideChatNotifications,
       // 1 = on, 2 = off (0/absent would read as "unchanged" server-side).
@@ -523,20 +540,31 @@
 
     floatingGalleryVisibleLoading = true;
     try {
-      const params = new URLSearchParams({ room: roomId, minLikes: '1', limit: '200' });
+      // The same selection the server's floating wall loads, so this list matches the board
+      const params = new URLSearchParams({ room: roomId });
       for (const id of floatingGalleryIncludeIds) {
         if (id) params.append('includeId', id);
       }
       for (const id of floatingGalleryExcludeIds) {
         if (id) params.append('excludeId', id);
       }
-      const res = await fetch(`${API_BASE}/api/gallery/floating?${params}`);
-      if (!res.ok) throw new Error('Failed to load');
+      // The hidden (excluded) pieces themselves, so they can be unhidden
+      const hiddenParams = new URLSearchParams({ room: roomId, hidden: '1' });
+      for (const id of floatingGalleryExcludeIds) {
+        if (id) hiddenParams.append('excludeId', id);
+      }
+      const [res, hiddenRes] = await Promise.all([
+        fetch(`${API_BASE}/api/gallery/floating-wall?${params}`),
+        floatingGalleryExcludeIds.length ? fetch(`${API_BASE}/api/gallery/floating-wall?${hiddenParams}`) : null
+      ]);
+      if (!res.ok || (hiddenRes && !hiddenRes.ok)) throw new Error('Failed to load');
       const data = await res.json();
       floatingGalleryVisibleItems = data.items || [];
+      floatingGalleryHiddenItems = hiddenRes ? ((await hiddenRes.json()).items || []) : [];
       floatingGalleryVisibleLoadedKey = loadedKey;
     } catch (err) {
       floatingGalleryVisibleItems = [];
+      floatingGalleryHiddenItems = [];
       floatingGalleryVisibleLoadedKey = '';
       displayMessage('Could not load visible gallery images', 'error');
     } finally {
@@ -870,7 +898,6 @@
                     <option value={option.value}>{option.label}</option>
                   {/each}
                 </select>
-                <span class="form-hint">Private rooms don't appear in the room browser.</span>
               </div>
             {/if}
           </div>
@@ -992,10 +1019,7 @@
               >Use latest snapshot</button>
             </div>
             <span class="form-hint">
-              What this room opens on once it has been empty. Left alone it follows the room&rsquo;s newest
-              snapshot. <strong>Set to current board</strong> pins this exact board until you change it.
-              <strong>Clear</strong> makes it open blank without deleting anything &mdash; the next snapshot
-              taken becomes the start state again, so use the checkbox above if you want it blank for good.
+              The saved board state allows you to load the previous board when a user joins after all users have left the room.
             </span>
           </div>
 
@@ -1030,7 +1054,7 @@
               />
               <span class="text-fade-unit">sec</span>
             </div>
-            <span class="form-hint">How long ephemeral SVG text stays visible before fully fading away. Range: 5 seconds to 30 minutes.</span>
+            <span class="form-hint">How long ephemeral Vector text stays visible before fully fading away. Range: 5 seconds to 30 minutes.</span>
           </div>
 
           <div class="form-group checkbox-group">
@@ -1075,26 +1099,27 @@
             <div class="floating-gallery-toolbar">
               <div>
                 <h4>Floating Gallery Layout</h4>
-                <p>The server seed below is shared by everyone in the room, so the Voronoi layout stays synchronized.</p>
+                <p>The server arranges the pieces around the board and everyone in the room sees the same layout. Rearrange sends every piece back in from the board edge when you save.</p>
               </div>
               <div class="floating-gallery-toolbar-actions">
-                <div class="floating-seed-chip">Seed: {floatingGallerySeed || 'not set'}</div>
-                <button class="btn secondary small" type="button" onclick={regenerateFloatingGallerySeed}>Regenerate Layout</button>
+                <button class="btn secondary small" type="button" onclick={regenerateFloatingGallerySeed}>
+                  {floatingGallerySeed !== (roomData?.floatingGallerySeed || 0) ? 'Rearranges on save' : 'Rearrange'}
+                </button>
               </div>
             </div>
 
             <div class="floating-gallery-summary">
-              <span>{floatingGalleryIncludeIds.length} visible</span>
-              <span>{floatingGalleryExcludeIds.length} excluded</span>
-              <span>{floatingGalleryBrowsePages} gallery pages</span>
+              <span>{floatingGalleryVisibleItems.length} on the wall</span>
+              <span>{floatingGalleryIncludeIds.length} pinned</span>
+              <span>{floatingGalleryExcludeIds.length} hidden</span>
             </div>
           </section>
 
           <section class="moderation-panel">
             <div class="floating-gallery-toolbar">
               <div>
-                <h4>Visible</h4>
-                <p>Images currently shown in the floating gallery — either pinned explicitly or tagged with this room and liked at least once.</p>
+                <h4>On the wall</h4>
+                <p>Exactly what floats around the board: every image tagged with this room, most-hearted first (up to 400), plus pinned images.{hasUnsavedFloatingGalleryChanges() ? ' Includes your unsaved changes.' : ''}</p>
               </div>
               <div class="moderation-toolbar-actions">
                 <button class="btn secondary small" type="button" onclick={() => fetchFloatingGalleryVisibleItems(true)}>
@@ -1129,7 +1154,7 @@
                             class:danger={true}
                             onclick={() => setFloatingGalleryMode(item.id, 'exclude')}
                           >
-                            Exclude
+                            Hide
                           </button>
                         {/if}
                       </div>
@@ -1139,16 +1164,56 @@
               </div>
             {:else}
               <div class="table-empty floating-gallery-empty">
-                {floatingGalleryVisibleLoading ? 'Loading visible gallery images...' : 'No images visible yet. Tag images with this room name and give them a like, or add them below.'}
+                {floatingGalleryVisibleLoading ? 'Loading the floating wall...' : 'Nothing on the wall yet. Tag images with this room name, or pin them below.'}
               </div>
             {/if}
           </section>
+
+          {#if floatingGalleryExcludeIds.length > 0}
+            <section class="moderation-panel">
+              <div class="floating-gallery-toolbar">
+                <div>
+                  <h4>Hidden</h4>
+                  <p>Kept off this room's floating gallery, whether hidden here or from the board by an admin. Unhide and save to bring one back.</p>
+                </div>
+              </div>
+
+              {#if floatingGalleryHiddenItems.length > 0}
+                <div class="floating-gallery-grid">
+                  {#each floatingGalleryHiddenItems as item (item.id)}
+                    <article class="floating-gallery-card">
+                      <img class="floating-gallery-thumb" src={item.thumbUrl || item.url} alt={item.title || 'Gallery image'} loading="lazy" />
+                      <div class="floating-gallery-card-body">
+                        <div class="floating-gallery-card-meta">
+                          <strong>{item.author}</strong>
+                          <span>{item.likesCount || 0} hearts</span>
+                        </div>
+                        <div class="floating-gallery-card-actions">
+                          <button
+                            type="button"
+                            class="btn small secondary"
+                            onclick={() => setFloatingGalleryMode(item.id, 'default')}
+                          >
+                            Unhide
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  {/each}
+                </div>
+              {:else}
+                <div class="table-empty floating-gallery-empty">
+                  {floatingGalleryVisibleLoading ? 'Loading hidden images...' : 'The hidden images have been deleted from the gallery.'}
+                </div>
+              {/if}
+            </section>
+          {/if}
 
           <section class="moderation-panel">
             <div class="floating-gallery-toolbar">
               <div>
                 <h4>All Gallery Images</h4>
-                <p>Browse the full gallery and add any image to the room include list. Excluded ids are also saved with the room settings.</p>
+                <p>Browse the full gallery and pin any image to this room's floating gallery, or hide it. Both are saved with the room settings.</p>
               </div>
               <div class="moderation-toolbar-actions">
                 <div class="floating-gallery-sort-toggle" role="group" aria-label="Gallery sort">
@@ -1197,7 +1262,7 @@
                           class:danger={floatingGalleryMode(item.id) === 'exclude'}
                           onclick={() => setFloatingGalleryMode(item.id, floatingGalleryMode(item.id) === 'exclude' ? 'default' : 'exclude')}
                         >
-                          {floatingGalleryMode(item.id) === 'exclude' ? 'Unexclude' : 'Exclude'}
+                          {floatingGalleryMode(item.id) === 'exclude' ? 'Unhide' : 'Hide'}
                         </button>
                       </div>
                     </div>
@@ -1794,7 +1859,6 @@
     justify-content: flex-end;
   }
 
-  .floating-seed-chip,
   .floating-gallery-summary span {
     background: color-mix(in srgb, var(--bg-primary) 84%, black);
     border: 1px solid var(--border-subtle);

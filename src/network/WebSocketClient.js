@@ -1452,6 +1452,25 @@ export class WebSocketClient {
         }
         break;
 
+      case T.FLOATING_WALL: {
+        const json = data.floatingWallJson || '';
+        // Replies (detach, shelf claims) resolve here so callers don't depend on the wall component being mounted
+        if (this._floatingWallRequests?.size && json.includes('"req":')) {
+          try {
+            const msg = JSON.parse(json);
+            const resolve = this._floatingWallRequests.get(msg.req);
+            if (resolve) {
+              this._floatingWallRequests.delete(msg.req);
+              resolve(msg);
+            }
+          } catch (err) {
+            console.error('[FloatingWall] Failed to parse reply:', err);
+          }
+        }
+        this.emit('floating_wall', { json, pos: data.floatingWallPos || [] });
+        break;
+      }
+
       case T.GMP:
         this.emit('gmp', { sessionIndex: data.u, brushData: data.g });
         break;
@@ -2405,6 +2424,42 @@ export class WebSocketClient {
     this.send({
       t: T.MIRROR_REGION,
       mirrorRegionsJson: JSON.stringify(payload)
+    });
+  }
+
+  /**
+   * Sends a floating art wall action to the server (never relayed to peers).
+   * @param {{ a: 'hello'|'bye', slow?: number }} payload (dragging is local; requests go through requestFloatingWall)
+   * @returns {void}
+   */
+  sendFloatingWall(payload) {
+    this.send({
+      t: T.FLOATING_WALL,
+      floatingWallJson: JSON.stringify(payload)
+    });
+  }
+
+  /**
+   * Sends a floating wall action that the server answers (detach, shelf claim/restore/delete).
+   * @param {Object} payload
+   * @param {number} [timeoutMs]
+   * @returns {Promise<{ ok: boolean, error?: string }>} never rejects
+   */
+  requestFloatingWall(payload, timeoutMs = 30000) {
+    if (!this._floatingWallRequests) {
+      this._floatingWallRequests = new Map();
+      this._floatingWallRequestSeq = 0;
+    }
+    const req = ++this._floatingWallRequestSeq;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (this._floatingWallRequests.delete(req)) resolve({ ok: false, error: 'The server did not respond' });
+      }, timeoutMs);
+      this._floatingWallRequests.set(req, (msg) => {
+        clearTimeout(timer);
+        resolve(msg);
+      });
+      this.sendFloatingWall({ ...payload, req });
     });
   }
 

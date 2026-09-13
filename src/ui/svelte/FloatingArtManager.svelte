@@ -1,973 +1,935 @@
+<script module>
+  // Card details (author, title, thumbnail, hearts) by gallery id. Shared by every mount this
+  // session, so remounting the wall (reconnect, board resize) doesn't fetch them again.
+  const metaCache = new Map();
+</script>
+
 <script>
-  import { untrack } from 'svelte';
-  import Delaunator from 'delaunator';
+  import { tick } from 'svelte';
+  import { appState } from '../../state.svelte.js';
   import { ClientIdentity } from '../../network/ClientIdentity.js';
+  import {
+    FloatingWallSim,
+    clampToLeash,
+    wipShelfLayout,
+    WIP_SHELF,
+    WALL_CARD_W,
+    WALL_CARD_H,
+    WALL_TICK_MS,
+    WALL_THROW_MAX
+  } from '../../../shared/floatingWallSim.js';
   import FloatingArt from './FloatingArt.svelte';
 
   /**
+   * The room's floating art wall and works-in-progress shelf.
+   *
+   * The server computes the room's layout (server/floatingWall.js) and sends only ids and
+   * positions; card details come in batches from /api/gallery/wall-meta for cards near the screen.
+   * Dragging is local: this client runs its own FloatingWallSim seeded with the room's layout, so
+   * neighbours shove aside and throws glide without the server. A local arrangement lasts until the
+   * server moves those pieces or the user presses Reset layout.
+   *
+   * Slow mode (low power / mobile): no local sim, a dragged card just stays where it's dropped, and
+   * cards glide without shadows. Shelf pieces are dragged back onto the board through `onWipPlace`.
+   *
    * @type {{
    *   roomId: string,
-   *   canvasBounds: { x: number, y: number, width: number, height: number },
    *   enabled: boolean,
-   *   floatingGallerySeed?: number,
-   *   floatingGalleryIncludeIds?: string[],
-   *   floatingGalleryExcludeIds?: string[],
-   *   floatingGalleryVoronoi?: { lines: Array, siteMarkers?: Array },
+   *   slowMode?: boolean,
+   *   showDetachFlights?: boolean,
+   *   isCanvasFlipped?: () => boolean,
+   *   wsClient?: any,
+   *   toBoardPoint?: (clientX: number, clientY: number) => { x: number, y: number },
    *   clientDeviceId?: string,
    *   apiBaseUrl?: string,
-   *   onLike?: (id: string) => Promise<void>,
-   *   onComment?: (id: string) => void
+   *   onLike?: (item: any, deviceId: string) => Promise<any>,
+   *   onComment?: (id: string) => void,
+   *   onAuthorClick?: (username: string) => void,
+   *   onWipPlace?: (item: { id: string, owner: string, w: number, h: number }, x: number, y: number) => Promise<boolean>,
+   *   onToast?: (message: string, ms?: number, type?: string) => void,
+   *   getBoardZoom?: () => number
    * }}
    */
   let {
     roomId,
-    canvasBounds,
     enabled = true,
-    floatingGallerySeed = 0,
-    floatingGalleryIncludeIds = [],
-    floatingGalleryExcludeIds = [],
-    floatingGalleryVoronoi = null,
+    slowMode = false,
+    showDetachFlights = true,
+    isCanvasFlipped = null,
+    wsClient = null,
+    toBoardPoint = null,
     clientDeviceId = '',
     apiBaseUrl = '',
     onLike = null,
-    onComment = null
+    onComment = null,
+    onAuthorClick = null,
+    onWipPlace = null,
+    onToast = null,
+    getBoardZoom = null
   } = $props();
 
-  let items = $state([]);
-  let loading = $state(false);
-  let lastFetchedRoom = $state(null);
-  let lastFetchedConfigKey = $state('');
-  let likedIds = $state(new Set());
-  let requestedRoom = null;
-  let requestedConfigKey = '';
+  // Moves a node to <body>. Anything inside #boards stacks under the board canvas, so a ghost
+  // dragged over the board would disappear behind it.
+  function portal(node) {
+    document.body.appendChild(node);
+    return { destroy: () => node.remove() };
+  }
+
+  const DRAG_START_PX = 5;
+  // A fingertip wobbles more than a mouse before it means to drag
+  const TOUCH_DRAG_START_PX = 10;
+  const THROW_KEEP = 0.3;
+  const THROW_SAMPLE_MS = 80;
+  // A local step that moves a card further than a tick can is a swap or the settle cleanup
+  const JUMP_PX = 70;
+  const DELETE_CONFIRM_MS = 3000;
+  // Hiding a piece from the wall (server checks the same)
+  const ROLE_MOD = 4;
+  const CLICK_SUPPRESS_MS = 350;
+  const POINTER_CLICK_SUPPRESS_MS = 400;
+  // The local sim's only holder
+  const LOCAL_HOLDER = 'local';
+  // Card details: ids per request, and how long requests from cards scrolling into view pool up
+  const META_BATCH = 50;
+  const META_FLUSH_MS = 40;
+  // A detach flight waits this long for its shelf card before giving up
+  const FLIGHT_WAIT_MS = 5000;
+  const FLIGHT_LIFT_AT = 0.16;
+  const FLIGHT_STEPS = 12;
+  const LAND_MS = 420;
+  // .wip-image padding (board px)
+  const WIP_IMAGE_PAD = 8;
+
   const clientIdentity = new ClientIdentity();
 
-  const FETCH_LIMIT = 75;
-  const NUM_SLOTS = 75;
+  /**
+   * `sx`/`sy` are the room's position; `x`/`y` are what's drawn, which differ while this user
+   * drags or after they moved a piece (`local`). `item` is null until its details load.
+   * @type {Array<{ id: string, group: number, item: any, x: number, y: number, sx: number, sy: number, active: boolean, jump: boolean, local: boolean }>}
+   */
+  let pieces = $state([]);
+  /** id → the reactive piece in `pieces` */
+  let pieceById = new Map();
+  let likedIds = $state(new Set());
+  let draggingId = $state(null);
+  let boardWidth = $state(0);
+  let boardHeight = $state(0);
+  /** @type {Array<{ id: string, owner: string, w: number, h: number, canManage: boolean, claimed: boolean }>} */
+  let wipItems = $state([]);
+  let wipDrag = $state(null);
+  let pendingDeleteId = $state(null);
+  let pendingHideId = $state(null);
+  let hideConfirmTimer = null;
+  // Live, so a promotion or demotion shows or removes the hide buttons without a remount
+  let canHide = $derived(Math.max(appState.selfRole || 0, appState.selfRoomRole || 0, appState.selfGlobalRole || 0) >= ROLE_MOD);
+  let revision = -1;
+  let drag = null;
+  let suppressClickUntil = 0;
+  let deleteConfirmTimer = null;
+  let lastWipDeleteTapAt = 0;
+  let lastResetTapAt = 0;
+  let cardsElement = $state(null);
+  // Detached art flying to the shelf: its card stays hidden until the flight lands, then bounces
+  let arrivingIds = $state(new Set());
+  let landedId = $state(null);
+  let landedTimer = null;
+  /** id → { ghost: HTMLImageElement, rect, ready: Promise, launching? }, waiting for the image and its shelf card */
+  const pendingFlights = new Map();
+  const flightElements = new Set();
+  /** @type {FloatingWallSim|null} this user's own copy of the wall, awake only while they drag or throw */
+  let localSim = null;
+  let localTimer = null;
+  const pendingMeta = new Set();
+  const inflightMeta = new Set();
+  let metaFlushTimer = null;
 
-  const BASE_BOARD_WIDTH = 1920;
-  const BASE_BOARD_HEIGHT = 1080;
-  const CARD_WIDTH = 180;
-  const CARD_HEIGHT = 200;
-  const CARD_GAP = 12;
-  const BOARD_GAP = 10;
-  const RECT_MARGIN_LEFT = 70;
-  const RECT_MARGIN_RIGHT = 36;
-  const RECT_MARGIN_TOP = 90;
-  const RECT_MARGIN_BOTTOM = 70;
-  const VORONOI_POINT_SPACING = 125;
-  const VORONOI_FIELD_PADDING = 1400;
-  const MAX_VORONOI_SUPPORT_POINTS = 340;
-  const MAX_VORONOI_LINE_LENGTH = 420;
-  const OUTSIDE_OFFSET_SCALE = 0.85;
-  const SHOW_VORONOI_WEB = false;
+  let shelf = $derived(wipShelfLayout(wipItems.length, boardWidth, boardHeight));
+  let hasLocalMoves = $derived(pieces.some(p => p.local));
 
-  let slotAssignments = $state(new Array(NUM_SLOTS).fill(null));
-  let likedIdLookup = $derived.by(() => {
-    const lookup = new Set(likedIds);
+  function send(payload) {
+    wsClient?.sendFloatingWall?.(payload);
+  }
 
-    for (const item of items) {
-      if (item?.id && (item.liked === true || item.likedByCurrentUser === true)) {
-        lookup.add(item.id);
+  function handleWallMessage({ json, pos }) {
+    let msg;
+    try {
+      msg = JSON.parse(json);
+    } catch {
+      return;
+    }
+    if (!msg || typeof msg !== 'object') return;
+
+    switch (msg.a) {
+      case 'state':
+        applyState(msg, pos);
+        break;
+      case 'pos':
+        if (msg.r === revision) applyPositions(pos);
+        break;
+      case 'likes':
+        setPieceLikes(msg.id, msg.n);
+        break;
+      case 'wip':
+        wipItems = Array.isArray(msg.items) ? msg.items : [];
+        launchPendingFlights();
+        break;
+      case 'fly':
+        // Someone else detached art: fly the stored shelf image from where it was on the board
+        if (typeof msg.id === 'string') flyToShelf(msg.id, `${apiBaseUrl}/api/wip/${msg.id}`, msg);
+        break;
+    }
+  }
+
+  function applyState(msg, pos) {
+    if (!Array.isArray(msg.ids)) return;
+    revision = msg.r;
+    boardWidth = msg.w || 0;
+    boardHeight = msg.h || 0;
+    const placedAt = new Map();
+    for (let k = 0; k + 2 < pos.length; k += 3) placedAt.set(pos[k], [pos[k + 1], pos[k + 2]]);
+
+    const previous = pieceById;
+    pieces = msg.ids.map((id, index) => {
+      const old = previous.get(id);
+      const at = placedAt.get(index);
+      const sx = at ? at[0] : (old?.sx ?? 0);
+      const sy = at ? at[1] : (old?.sy ?? 0);
+      const held = !!(drag?.moved && drag.id === id && old);
+      // A local move survives a membership change unless the room's layout moved that piece meanwhile
+      const keepLocal = !!old?.local && (!at || (at[0] === old.sx && at[1] === old.sy));
+      return {
+        id,
+        group: Array.isArray(msg.g) ? msg.g[index] : index,
+        item: metaCache.get(id) || null,
+        x: held || keepLocal ? old.x : sx,
+        y: held || keepLocal ? old.y : sy,
+        sx,
+        sy,
+        active: !!at || !!old?.active,
+        jump: false,
+        local: keepLocal || held
+      };
+    });
+    pieceById = new Map(pieces.map(p => [p.id, p]));
+    syncLocalSim();
+
+    if (drag) {
+      drag.piece = pieceById.get(drag.id) || null;
+      if (!drag.piece) cancelDrag();
+    }
+  }
+
+  // A new layout from the room: everything it moved glides there, local arrangements included
+  function applyPositions(pos) {
+    let newlyPlaced = false;
+    for (let k = 0; k + 2 < pos.length; k += 3) {
+      const piece = pieces[pos[k]];
+      if (!piece) continue;
+      const x = pos[k + 1], y = pos[k + 2];
+      piece.sx = x;
+      piece.sy = y;
+      // The dragging user trusts their own pointer for the piece they hold
+      if (drag?.moved && drag.id === piece.id) continue;
+      piece.local = false;
+      piece.jump = !slowMode && piece.active;
+      piece.x = x;
+      piece.y = y;
+      if (piece.active) {
+        localSim?.place(piece.id, x, y);
+      } else {
+        piece.active = true;
+        newlyPlaced = true;
       }
     }
+    if (newlyPlaced) syncLocalSim();
+  }
 
-    for (const item of slotAssignments) {
-      if (item?.id && (item.liked === true || item.likedByCurrentUser === true)) {
-        lookup.add(item.id);
+  // --- Local physics ---
+
+  function syncLocalSim() {
+    if (slowMode) return;
+    if (!localSim) localSim = new FloatingWallSim({ boardWidth, boardHeight });
+    localSim.setBoard(boardWidth, boardHeight);
+    const active = pieces.filter(p => p.active);
+    localSim.setPieces(
+      active.map(p => ({ id: p.id, group: `g${p.group}`, likes: p.item?.likesCount || 0 })),
+      new Map(active.map(p => [p.id, { x: p.x, y: p.y }]))
+    );
+    // The room's layout arrives settled; only this user's own drags should set the local wall moving
+    if (!localTimer) localSim.freeze();
+  }
+
+  function runLocalSim() {
+    if (!localTimer && localSim?.awake) localTimer = setInterval(stepLocalSim, WALL_TICK_MS);
+  }
+
+  function stopLocalSim() {
+    clearInterval(localTimer);
+    localTimer = null;
+  }
+
+  function stepLocalSim() {
+    if (!localSim) return stopLocalSim();
+    // Holding still is still holding: refresh the hold so the sim doesn't drop the piece
+    if (drag?.held) localSim.dragTo(drag.id, LOCAL_HOLDER, drag.targetX, drag.targetY);
+    const { moved } = localSim.step();
+    for (const simPiece of moved) showLocalPosition(simPiece);
+    if (!localSim.awake) stopLocalSim();
+  }
+
+  function showLocalPosition(simPiece) {
+    const piece = pieceById.get(simPiece.id);
+    if (!piece) return;
+    piece.jump = Math.hypot(simPiece.x - piece.x, simPiece.y - piece.y) > JUMP_PX;
+    piece.x = simPiece.x;
+    piece.y = simPiece.y;
+    piece.local = Math.abs(piece.x - piece.sx) > 0.5 || Math.abs(piece.y - piece.sy) > 0.5;
+  }
+
+  // Everything back where the room has it
+  function resetLayout() {
+    cancelDrag();
+    stopLocalSim();
+    for (const piece of pieces) {
+      if (!piece.local) continue;
+      piece.jump = true;
+      piece.x = piece.sx;
+      piece.y = piece.sy;
+      piece.local = false;
+      localSim?.place(piece.id, piece.sx, piece.sy);
+    }
+    localSim?.freeze();
+  }
+
+  function handleResetPointerUp(e) {
+    if (e.pointerType === 'mouse') return;
+    lastResetTapAt = performance.now();
+    e.preventDefault();
+    resetLayout();
+  }
+
+  function handleResetClick() {
+    if (performance.now() - lastResetTapAt < POINTER_CLICK_SUPPRESS_MS) return;
+    resetLayout();
+  }
+
+  // --- Card details ---
+
+  function toMeta(entry) {
+    return {
+      id: entry.id,
+      url: entry.url,
+      thumbUrl: entry.thumbUrl || entry.url,
+      author: entry.author,
+      hasProfile: !!entry.authorHasProfile,
+      title: entry.title || '',
+      likesCount: entry.likesCount || 0,
+      animatedUrl: entry.animatedUrl || null
+    };
+  }
+
+  // Called by each card as it nears the screen; requests pool up and go out in batches
+  function requestMeta(id) {
+    if (!id || metaCache.has(id) || inflightMeta.has(id)) return;
+    pendingMeta.add(id);
+    if (!metaFlushTimer) metaFlushTimer = setTimeout(flushMeta, META_FLUSH_MS);
+  }
+
+  async function flushMeta() {
+    metaFlushTimer = null;
+    const ids = [...pendingMeta].slice(0, META_BATCH);
+    for (const id of ids) {
+      pendingMeta.delete(id);
+      inflightMeta.add(id);
+    }
+    if (pendingMeta.size) metaFlushTimer = setTimeout(flushMeta, 0);
+    if (!ids.length) return;
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/gallery/wall-meta?ids=${ids.join(',')}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      for (const entry of Array.isArray(data?.items) ? data.items : []) {
+        if (!entry?.id) continue;
+        const meta = toMeta(entry);
+        metaCache.set(meta.id, meta);
+        const piece = pieceById.get(meta.id);
+        if (piece) piece.item = meta;
+        const simPiece = localSim?.byId.get(meta.id);
+        if (simPiece) simPiece.likes = meta.likesCount;
       }
-    }
-
-    return lookup;
-  });
-
-  function persistLikedIds(nextLikedIds) {
-    likedIds = nextLikedIds;
-  }
-
-  function itemIsLiked(item) {
-    return !!item?.id && likedIdLookup.has(item.id);
-  }
-
-  function getClientDeviceId() {
-    return clientDeviceId || clientIdentity.deviceId || '';
-  }
-
-  function syncFetchedLikedItems(fetchedItems) {
-    const nextLikedIds = new Set(likedIds);
-    let changed = false;
-
-    for (const item of fetchedItems || []) {
-      if (!item?.id) continue;
-      const isLiked = item.liked === true || item.likedByCurrentUser === true;
-      if (isLiked && !nextLikedIds.has(item.id)) {
-        nextLikedIds.add(item.id);
-        changed = true;
-      } else if (!isLiked && nextLikedIds.has(item.id)) {
-        nextLikedIds.delete(item.id);
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      persistLikedIds(nextLikedIds);
+    } catch (err) {
+      console.error('[FloatingArt] Card details fetch error:', err);
+    } finally {
+      for (const id of ids) inflightMeta.delete(id);
     }
   }
 
-  function updateFloatingItem(itemId, patch) {
-    items = items.map((entry) => entry.id === itemId ? { ...entry, ...patch } : entry);
-    slotAssignments = slotAssignments.map((entry) => entry?.id === itemId ? { ...entry, ...patch } : entry);
+  function setPieceLikes(id, likesCount) {
+    if (typeof likesCount !== 'number') return;
+    const meta = metaCache.get(id);
+    if (meta) metaCache.set(id, { ...meta, likesCount });
+    const piece = pieceById.get(id);
+    if (piece?.item) piece.item = { ...piece.item, likesCount };
+    const simPiece = localSim?.byId.get(id);
+    if (simPiece) simPiece.likes = likesCount;
+  }
+
+  function setLiked(id, liked) {
+    const next = new Set(likedIds);
+    if (liked) next.add(id);
+    else next.delete(id);
+    likedIds = next;
   }
 
   async function likeFloatingItem(item) {
     if (!item?.id || !onLike) return;
 
-    const wasLiked = itemIsLiked(item);
-    const previousLikesCount = item.likesCount || 0;
-    const nextLikedIds = new Set(likedIds);
-    if (wasLiked) nextLikedIds.delete(item.id);
-    else nextLikedIds.add(item.id);
-
-    persistLikedIds(nextLikedIds);
-    updateFloatingItem(item.id, {
-      liked: !wasLiked,
-      likedByCurrentUser: !wasLiked,
-      likesCount: Math.max(0, previousLikesCount + (wasLiked ? -1 : 1))
-    });
+    const wasLiked = likedIds.has(item.id);
+    const previousCount = pieceById.get(item.id)?.item?.likesCount ?? item.likesCount ?? 0;
+    setLiked(item.id, !wasLiked);
+    setPieceLikes(item.id, Math.max(0, previousCount + (wasLiked ? -1 : 1)));
 
     try {
-      const data = await onLike(item, getClientDeviceId());
-      const syncedLikedIds = new Set(likedIds);
-      if (data?.liked) syncedLikedIds.add(item.id);
-      else syncedLikedIds.delete(item.id);
-      persistLikedIds(syncedLikedIds);
-      updateFloatingItem(item.id, {
-        liked: !!data?.liked,
-        likedByCurrentUser: !!data?.liked,
-        ...(typeof data?.likesCount === 'number' ? { likesCount: data.likesCount } : {})
-      });
-    } catch (err) {
-      const revertedLikedIds = new Set(nextLikedIds);
-      if (wasLiked) revertedLikedIds.add(item.id);
-      else revertedLikedIds.delete(item.id);
-      persistLikedIds(revertedLikedIds);
-      updateFloatingItem(item.id, {
-        liked: wasLiked,
-        likedByCurrentUser: wasLiked,
-        likesCount: previousLikesCount
-      });
+      const data = await onLike(item, clientDeviceId || clientIdentity.deviceId || '');
+      setLiked(item.id, !!data?.liked);
+      setPieceLikes(item.id, data?.likesCount);
+    } catch {
+      setLiked(item.id, wasLiked);
+      setPieceLikes(item.id, previousCount);
     }
   }
 
-  function buildFetchConfigKey() {
-    return JSON.stringify({
-      roomId,
-      includeIds: floatingGalleryIncludeIds || [],
-      excludeIds: floatingGalleryExcludeIds || []
-    });
+  // Mod+: first tap arms, second tap within 3 s hides it for the whole room
+  async function hideFloatingItem(item) {
+    if (!item?.id || !canHide) return;
+    clearTimeout(hideConfirmTimer);
+    if (pendingHideId !== item.id) {
+      pendingHideId = item.id;
+      hideConfirmTimer = setTimeout(() => { pendingHideId = null; }, DELETE_CONFIRM_MS);
+      return;
+    }
+    pendingHideId = null;
+    const result = await wsClient?.requestFloatingWall?.({ a: 'hide', id: item.id });
+    if (result?.ok) {
+      onToast?.('Hidden from the floating gallery. Unhide it in Room Settings → Floating Gallery.', 4000);
+    } else {
+      onToast?.(result?.error || 'Could not hide that piece', 3000, 'error');
+    }
   }
 
-  async function fetchFloatingArt(forceRefresh = false) {
-    if (!enabled || loading) return;
+  async function fetchLikedIds() {
+    const token = localStorage.getItem('topDrawAuthToken');
+    if (!token) return;
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/gallery/liked-ids`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      likedIds = new Set(Array.isArray(data?.ids) ? data.ids : []);
+    } catch (err) {
+      console.error('[FloatingArt] Liked ids fetch error:', err);
+    }
+  }
 
-    const configKey = buildFetchConfigKey();
+  // A drag that ends over a card's image or name is not a tap. On touch the card's own pointerup
+  // runs before the window's, so an in-progress drag counts too.
+  function isClickSuppressed() {
+    return !!drag?.moved || performance.now() < suppressClickUntil;
+  }
 
-    if (!forceRefresh && lastFetchedRoom === roomId && lastFetchedConfigKey === configKey && items.length > 0) {
+  // --- Floating wall drag (local only) ---
+
+  function handleCardPointerDown(piece, e) {
+    if (drag || wipDrag || !toBoardPoint) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (e.target?.closest?.('.like-btn, .art-author-link, .hide-btn')) return;
+    e.stopPropagation();
+    const point = toBoardPoint(e.clientX, e.clientY);
+    drag = {
+      id: piece.id,
+      piece,
+      pointerId: e.pointerId,
+      threshold: e.pointerType === 'mouse' ? DRAG_START_PX : TOUCH_DRAG_START_PX,
+      startX: e.clientX,
+      startY: e.clientY,
+      offsetX: point.x - piece.x,
+      offsetY: point.y - piece.y,
+      targetX: piece.x,
+      targetY: piece.y,
+      moved: false,
+      held: false,
+      samples: []
+    };
+    window.addEventListener('pointermove', handleWindowPointerMove);
+    window.addEventListener('pointerup', handleWindowPointerUp);
+    window.addEventListener('pointercancel', handleWindowPointerCancel);
+    // A second finger is a pinch or pan for the board, not part of this drag
+    window.addEventListener('pointerdown', handleExtraPointerDown, true);
+  }
+
+  function handleWindowPointerMove(e) {
+    if (!drag?.piece || e.pointerId !== drag.pointerId) return;
+    if (!drag.moved) {
+      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < drag.threshold) return;
+      drag.moved = true;
+      draggingId = drag.id;
+      if (localSim) {
+        // The shelf may have changed since the sim last saw it
+        localSim.setBoard(boardWidth, boardHeight);
+        localSim.setObstacles(shelf.rect ? [shelf.rect] : []);
+        drag.held = localSim.grab(drag.id, LOCAL_HOLDER);
+      }
+    }
+    e.preventDefault();
+
+    const point = toBoardPoint(e.clientX, e.clientY);
+    drag.targetX = point.x - drag.offsetX;
+    drag.targetY = point.y - drag.offsetY;
+    drag.piece.jump = false;
+    drag.piece.local = true;
+
+    if (!drag.held) {
+      // Slow mode: no physics, just the leash
+      const clamped = clampToLeash(pieces, drag.piece, drag.targetX, drag.targetY);
+      drag.piece.x = clamped.x;
+      drag.piece.y = clamped.y;
       return;
     }
 
-    loading = true;
-    try {
-      const params = new URLSearchParams({
-        room: roomId,
-        minLikes: '1',
-        limit: String(FETCH_LIMIT)
-      });
-      for (const id of floatingGalleryIncludeIds || []) {
-        if (id) params.append('includeId', id);
-      }
-      for (const id of floatingGalleryExcludeIds || []) {
-        if (id) params.append('excludeId', id);
-      }
-      const deviceId = getClientDeviceId();
-      if (deviceId) {
-        params.set('deviceId', deviceId);
-      }
-      const url = `${apiBaseUrl}/api/gallery/floating?${params.toString()}`;
-      const token = localStorage.getItem('topDrawAuthToken');
-      const response = await fetch(url, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      if (!response.ok) throw new Error('Failed to fetch floating art');
+    localSim.dragTo(drag.id, LOCAL_HOLDER, drag.targetX, drag.targetY);
+    const simPiece = localSim.byId.get(drag.id);
+    drag.piece.x = simPiece.x;
+    drag.piece.y = simPiece.y;
+    runLocalSim();
 
-      const data = await response.json();
-      const fetchedItems = data.items || [];
-      syncFetchedLikedItems(fetchedItems);
-      items = fetchedItems;
-      lastFetchedRoom = roomId;
-      lastFetchedConfigKey = configKey;
-    } catch (err) {
-      console.error('[FloatingArt] Fetch error:', err);
-      items = [];
-    } finally {
-      loading = false;
-    }
+    const now = performance.now();
+    // Sample the piece, not the pointer, so straining against the leash doesn't store up a throw
+    drag.samples.push({ t: now, x: simPiece.x, y: simPiece.y });
+    while (drag.samples.length > 2 && now - drag.samples[0].t > THROW_SAMPLE_MS) drag.samples.shift();
   }
 
-  function hashString(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) - hash) + str.charCodeAt(i);
-      hash = hash & hash;
-    }
-    return Math.abs(hash);
+  function removeDragListeners() {
+    window.removeEventListener('pointermove', handleWindowPointerMove);
+    window.removeEventListener('pointerup', handleWindowPointerUp);
+    window.removeEventListener('pointercancel', handleWindowPointerCancel);
+    window.removeEventListener('pointerdown', handleExtraPointerDown, true);
   }
 
-  function createSeededRandom(seed) {
-    let state = seed || 1;
-    return () => {
-      state = (state * 1664525 + 1013904223) >>> 0;
-      return state / 4294967296;
-    };
+  function handleExtraPointerDown(e) {
+    if (drag && e.pointerId !== drag.pointerId) cancelDrag();
   }
 
-  function getBoardMetrics() {
-    const width = Math.max(canvasBounds?.width || 0, 1);
-    const height = Math.max(canvasBounds?.height || 0, 1);
-
-    return {
-      left: canvasBounds?.x || 0,
-      top: canvasBounds?.y || 0,
-      width,
-      height,
-      right: (canvasBounds?.x || 0) + width,
-      bottom: (canvasBounds?.y || 0) + height
-    };
+  function handleWindowPointerCancel(e) {
+    if (drag && e.pointerId === drag.pointerId) cancelDrag();
   }
 
-  // Layout is computed in actual board coordinates. Cards distribute around
-  // the real board's perimeter at any size, instead of bunching around a
-  // hardcoded 1920x1080 silhouette.
-  function getLayoutBoardMetrics() {
-    return getBoardMetrics();
-  }
-
-  function getBoardScale() {
-    const board = getBoardMetrics();
-    return {
-      originX: board.left,
-      originY: board.top,
-      scaleX: 1,
-      scaleY: 1
-    };
-  }
-
-  function projectPoint(point) {
-    const { originX, originY, scaleX, scaleY } = getBoardScale();
-    const board = getBoardMetrics();
-    const baseRight = board.right;
-    const baseBottom = board.bottom;
-    const liveRight = board.right;
-    const liveBottom = board.bottom;
-
-    const projectCoord = (value, baseMin, baseMax, liveMin, liveMax, scale) => {
-      if (value < baseMin) return liveMin + ((value - baseMin) * OUTSIDE_OFFSET_SCALE);
-      if (value > baseMax) return liveMax + ((value - baseMax) * OUTSIDE_OFFSET_SCALE);
-      return liveMin + ((value - baseMin) * scale);
-    };
-
-    return {
-      x: projectCoord(point.x, originX, baseRight, originX, liveRight, scaleX),
-      y: projectCoord(point.y, originY, baseBottom, originY, liveBottom, scaleY)
-    };
-  }
-
-  function projectCardPosition(slot) {
-    const { originX, originY, scaleX, scaleY } = getBoardScale();
-    const board = getBoardMetrics();
-    const baseRight = board.right;
-    const baseBottom = board.bottom;
-    const liveRight = board.right;
-    const liveBottom = board.bottom;
-
-    const cardRight = slot.x + CARD_WIDTH;
-    const cardBottom = slot.y + CARD_HEIGHT;
-    let x;
-    let y;
-
-    if (cardRight <= originX) {
-      x = originX + ((cardRight - originX) * OUTSIDE_OFFSET_SCALE) - CARD_WIDTH;
-    } else if (slot.x >= baseRight) {
-      x = liveRight + ((slot.x - baseRight) * OUTSIDE_OFFSET_SCALE);
-    } else {
-      x = originX + ((slot.x - originX) * scaleX);
-    }
-
-    if (cardBottom <= originY) {
-      y = originY + ((cardBottom - originY) * OUTSIDE_OFFSET_SCALE) - CARD_HEIGHT;
-    } else if (slot.y >= baseBottom) {
-      y = liveBottom + ((slot.y - baseBottom) * OUTSIDE_OFFSET_SCALE);
-    } else {
-      y = originY + ((slot.y - originY) * scaleY);
-    }
-
-    return { x, y };
-  }
-
-  function projectSlot(slot) {
-    const center = projectPoint({ x: slot.centerX, y: slot.centerY });
-    const position = projectCardPosition(slot);
-    return {
-      ...slot,
-      x: position.x,
-      y: position.y,
-      centerX: center.x,
-      centerY: center.y
-    };
-  }
-
-  function createProjectedSlots(slots) {
-    const board = getBoardMetrics();
-    const placed = [];
-
-    for (const slot of slots) {
-      const projected = projectSlot(slot);
-      if (cardIntersectsBoard(projected, board)) continue;
-      if (placed.some(existing => cardsOverlap(projected, existing))) continue;
-      placed.push(projected);
-    }
-
-    return placed;
-  }
-
-  function projectGeometry(geometry) {
-    return {
-      lines: geometry.lines.map((line) => {
-        const start = projectPoint({ x: line.x1, y: line.y1 });
-        const end = projectPoint({ x: line.x2, y: line.y2 });
-        return {
-          x1: start.x,
-          y1: start.y,
-          x2: end.x,
-          y2: end.y
-        };
-      }),
-      siteMarkers: geometry.siteMarkers.map((site) => ({
-        ...site,
-        ...projectPoint(site)
-      }))
-    };
-  }
-
-  function getExpandedRect(board) {
-    return {
-      left: board.left - RECT_MARGIN_LEFT,
-      top: board.top - RECT_MARGIN_TOP,
-      right: board.right + RECT_MARGIN_RIGHT,
-      bottom: board.bottom + RECT_MARGIN_BOTTOM
-    };
-  }
-
-  function getVoronoiFieldRect(board) {
-    return {
-      left: board.left - VORONOI_FIELD_PADDING,
-      top: board.top - VORONOI_FIELD_PADDING,
-      right: board.right + VORONOI_FIELD_PADDING,
-      bottom: board.bottom + VORONOI_FIELD_PADDING
-    };
-  }
-
-  function getRectPerimeter(rect) {
-    return (2 * (rect.right - rect.left)) + (2 * (rect.bottom - rect.top));
-  }
-
-  function pointInBoard(point, board) {
-    return (
-      point.x >= board.left &&
-      point.x <= board.right &&
-      point.y >= board.top &&
-      point.y <= board.bottom
-    );
-  }
-
-  function orientation(a, b, c) {
-    const value = ((b.y - a.y) * (c.x - b.x)) - ((b.x - a.x) * (c.y - b.y));
-    if (Math.abs(value) < 1e-6) return 0;
-    return value > 0 ? 1 : 2;
-  }
-
-  function onSegment(a, b, c) {
-    return (
-      b.x <= Math.max(a.x, c.x) + 1e-6 &&
-      b.x >= Math.min(a.x, c.x) - 1e-6 &&
-      b.y <= Math.max(a.y, c.y) + 1e-6 &&
-      b.y >= Math.min(a.y, c.y) - 1e-6
-    );
-  }
-
-  function segmentsIntersect(a, b, c, d) {
-    const o1 = orientation(a, b, c);
-    const o2 = orientation(a, b, d);
-    const o3 = orientation(c, d, a);
-    const o4 = orientation(c, d, b);
-
-    if (o1 !== o2 && o3 !== o4) return true;
-    if (o1 === 0 && onSegment(a, c, b)) return true;
-    if (o2 === 0 && onSegment(a, d, b)) return true;
-    if (o3 === 0 && onSegment(c, a, d)) return true;
-    if (o4 === 0 && onSegment(c, b, d)) return true;
-    return false;
-  }
-
-  function lineTouchesBoard(a, b, board) {
-    if (pointInBoard(a, board) || pointInBoard(b, board)) {
-      return true;
-    }
-
-    const corners = [
-      { x: board.left, y: board.top },
-      { x: board.right, y: board.top },
-      { x: board.right, y: board.bottom },
-      { x: board.left, y: board.bottom }
-    ];
-
-    for (let i = 0; i < corners.length; i++) {
-      const c = corners[i];
-      const d = corners[(i + 1) % corners.length];
-      if (segmentsIntersect(a, b, c, d)) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  function createVoronoiSupportSites(board, layoutSeed, { includeBoard = false } = {}) {
-    const field = getVoronoiFieldRect(board);
-    const width = field.right - field.left;
-    const height = field.bottom - field.top;
-    const columns = Math.max(1, Math.floor(width / VORONOI_POINT_SPACING));
-    const rows = Math.max(1, Math.floor(height / VORONOI_POINT_SPACING));
-    const colStep = width / columns;
-    const rowStep = height / rows;
-    const jitterRangeX = colStep * 0.22;
-    const jitterRangeY = rowStep * 0.22;
-    const random = createSeededRandom(layoutSeed ^ 0x9e3779b9);
-    const sites = [];
-
-    for (let row = 0; row <= rows; row++) {
-      for (let col = 0; col <= columns; col++) {
-        const baseX = field.left + (col * colStep);
-        const baseY = field.top + (row * rowStep);
-        const x = baseX + ((random() - 0.5) * 2 * jitterRangeX);
-        const y = baseY + ((random() - 0.5) * 2 * jitterRangeY);
-        if (!includeBoard && pointInBoard({ x, y }, board)) continue;
-        sites.push({ x, y, kind: 'support' });
-      }
-    }
-
-    if (sites.length <= MAX_VORONOI_SUPPORT_POINTS) {
-      return sites;
-    }
-
-    const sampled = [];
-    const stride = sites.length / MAX_VORONOI_SUPPORT_POINTS;
-    for (let i = 0; i < MAX_VORONOI_SUPPORT_POINTS; i++) {
-      sampled.push(sites[Math.floor(i * stride)]);
-    }
-    return sampled;
-  }
-
-  function dedupeSites(sites) {
-    const seen = new Set();
-    const deduped = [];
-
-    for (const site of sites) {
-      const key = `${Math.round(site.x)}:${Math.round(site.y)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      deduped.push(site);
-    }
-
-    return deduped;
-  }
-
-  function pointOnRectPerimeter(rect, distance) {
-    const width = rect.right - rect.left;
-    const height = rect.bottom - rect.top;
-    const perimeter = (2 * width) + (2 * height);
-    let d = ((distance % perimeter) + perimeter) % perimeter;
-
-    if (d <= width) {
-      return { x: rect.left + d, y: rect.top };
-    }
-
-    d -= width;
-    if (d <= height) {
-      return { x: rect.right, y: rect.top + d };
-    }
-
-    d -= height;
-    if (d <= width) {
-      return { x: rect.right - d, y: rect.bottom };
-    }
-
-    d -= width;
-    return { x: rect.left, y: rect.bottom - d };
-  }
-
-  function createRectGeneratorSites(rect, layoutSeed) {
-    const width = rect.right - rect.left;
-    const height = rect.bottom - rect.top;
-    const perimeter = (2 * width) + (2 * height);
-    const siteCount = Math.max(12, Math.floor(perimeter / VORONOI_POINT_SPACING));
-    const spacing = perimeter / siteCount;
-    const random = createSeededRandom(layoutSeed ^ 0x85ebca6b);
-    const sites = [];
-
-    for (let i = 0; i < siteCount; i++) {
-      const jitter = (random() - 0.5) * spacing * 0.75;
-      const point = pointOnRectPerimeter(rect, (i * spacing) + jitter);
-      sites.push({ ...point, kind: 'rect' });
-    }
-
-    return dedupeSites(sites);
-  }
-
-  function createSlotSeed(roomSeed) {
-    return (roomSeed || 1) ^ hashString(`${BASE_BOARD_WIDTH}:${BASE_BOARD_HEIGHT}:${roomId || 'room'}`);
-  }
-
-  function createVoronoiBaseSites(board, layoutSeed, { includeBoard = false } = {}) {
-    const rect = getExpandedRect(board);
-    return dedupeSites([
-      ...createRectGeneratorSites(rect, layoutSeed),
-      ...createVoronoiSupportSites(board, layoutSeed, { includeBoard })
-    ]);
-  }
-
-  function distanceToBoard(point, board) {
-    const dx = Math.max(board.left - point.x, 0, point.x - board.right);
-    const dy = Math.max(board.top - point.y, 0, point.y - board.bottom);
-    return Math.hypot(dx, dy);
-  }
-
-  function cardIntersectsBoard(card, board) {
-    return !(
-      card.x + CARD_WIDTH <= board.left - BOARD_GAP ||
-      card.x >= board.right + BOARD_GAP ||
-      card.y + CARD_HEIGHT <= board.top - BOARD_GAP ||
-      card.y >= board.bottom + BOARD_GAP
-    );
-  }
-
-  function cardsOverlap(a, b) {
-    return !(
-      a.x + CARD_WIDTH + CARD_GAP <= b.x ||
-      a.x >= b.x + CARD_WIDTH + CARD_GAP ||
-      a.y + CARD_HEIGHT + CARD_GAP <= b.y ||
-      a.y >= b.y + CARD_HEIGHT + CARD_GAP
-    );
-  }
-
-  function circumcenter(ax, ay, bx, by, cx, cy) {
-    const d = 2 * ((ax * (by - cy)) + (bx * (cy - ay)) + (cx * (ay - by)));
-    if (Math.abs(d) < 1e-6) return null;
-
-    const ax2ay2 = (ax * ax) + (ay * ay);
-    const bx2by2 = (bx * bx) + (by * by);
-    const cx2cy2 = (cx * cx) + (cy * cy);
-
-    return {
-      x: ((ax2ay2 * (by - cy)) + (bx2by2 * (cy - ay)) + (cx2cy2 * (ay - by))) / d,
-      y: ((ax2ay2 * (cx - bx)) + (bx2by2 * (ax - cx)) + (cx2cy2 * (bx - ax))) / d
-    };
-  }
-
-  function createVoronoiVertices(baseSites, board, { includeBoard = false } = {}) {
-    if (baseSites.length < 3) return [];
-
-    const delaunay = Delaunator.from(baseSites, point => point.x, point => point.y);
-    const vertices = [];
-
-    for (let t = 0; t < delaunay.triangles.length; t += 3) {
-      const a = baseSites[delaunay.triangles[t]];
-      const b = baseSites[delaunay.triangles[t + 1]];
-      const c = baseSites[delaunay.triangles[t + 2]];
-      const center = circumcenter(a.x, a.y, b.x, b.y, c.x, c.y);
-      if (!center || (!includeBoard && pointInBoard(center, board))) continue;
-      vertices.push({ x: center.x, y: center.y, kind: 'vertex' });
-    }
-
-    return dedupeSites(vertices);
-  }
-
-  function createSlotLayout(count, baseSites, board = getBoardMetrics()) {
-    const sitePool = createVoronoiVertices(baseSites, board)
-      .sort((a, b) => {
-        const distanceDelta = distanceToBoard(a, board) - distanceToBoard(b, board);
-        if (Math.abs(distanceDelta) > 1e-6) return distanceDelta;
-        if (Math.abs(a.y - b.y) > 1e-6) return a.y - b.y;
-        return a.x - b.x;
-      });
-
-    const placed = [];
-
-    for (let i = 0; i < count; i++) {
-      let chosenSite = null;
-      let card = null;
-
-      for (let s = 0; s < sitePool.length; s++) {
-        const site = sitePool[s];
-        const candidate = {
-          x: site.x - (CARD_WIDTH / 2),
-          y: site.y - (CARD_HEIGHT / 2)
-        };
-
-        if (cardIntersectsBoard(candidate, board)) continue;
-        if (placed.some(existing => cardsOverlap(candidate, existing))) continue;
-
-        chosenSite = site;
-        card = candidate;
-        sitePool.splice(s, 1);
-        break;
-      }
-
-      if (!chosenSite) break;
-
-      placed.push({
-        x: card.x,
-        y: card.y,
-        centerX: chosenSite.x,
-        centerY: chosenSite.y,
-      });
-    }
-
-    return placed;
-  }
-
-  function clipLineToRect(origin, direction, rect) {
-    const candidates = [];
-    const { x: ox, y: oy } = origin;
-    const { x: dx, y: dy } = direction;
-
-    if (Math.abs(dx) > 1e-6) {
-      const tLeft = (rect.left - ox) / dx;
-      const yLeft = oy + (tLeft * dy);
-      if (tLeft > 0 && yLeft >= rect.top - 1 && yLeft <= rect.bottom + 1) {
-        candidates.push({ x: rect.left, y: yLeft, t: tLeft });
-      }
-
-      const tRight = (rect.right - ox) / dx;
-      const yRight = oy + (tRight * dy);
-      if (tRight > 0 && yRight >= rect.top - 1 && yRight <= rect.bottom + 1) {
-        candidates.push({ x: rect.right, y: yRight, t: tRight });
-      }
-    }
-
-    if (Math.abs(dy) > 1e-6) {
-      const tTop = (rect.top - oy) / dy;
-      const xTop = ox + (tTop * dx);
-      if (tTop > 0 && xTop >= rect.left - 1 && xTop <= rect.right + 1) {
-        candidates.push({ x: xTop, y: rect.top, t: tTop });
-      }
-
-      const tBottom = (rect.bottom - oy) / dy;
-      const xBottom = ox + (tBottom * dx);
-      if (tBottom > 0 && xBottom >= rect.left - 1 && xBottom <= rect.right + 1) {
-        candidates.push({ x: xBottom, y: rect.bottom, t: tBottom });
-      }
-    }
-
-    if (!candidates.length) {
-      return { x: ox, y: oy };
-    }
-
-    candidates.sort((a, b) => a.t - b.t);
-    return candidates[0];
-  }
-
-  function createPointKey(x, y) {
-    return `${Math.round(x)}:${Math.round(y)}`;
-  }
-
-  function pruneIsolatedLines(lines) {
-    if (lines.length <= 1) return [];
-
-    const pointUsage = new Map();
-    const adjacency = new Map();
-
-    for (const line of lines) {
-      const startKey = createPointKey(line.x1, line.y1);
-      const endKey = createPointKey(line.x2, line.y2);
-      pointUsage.set(startKey, (pointUsage.get(startKey) || 0) + 1);
-      pointUsage.set(endKey, (pointUsage.get(endKey) || 0) + 1);
-
-      if (!adjacency.has(startKey)) adjacency.set(startKey, new Set());
-      if (!adjacency.has(endKey)) adjacency.set(endKey, new Set());
-      adjacency.get(startKey).add(endKey);
-      adjacency.get(endKey).add(startKey);
-    }
-
-    const smallComponentPoints = new Set();
-    const visited = new Set();
-
-    for (const pointKey of adjacency.keys()) {
-      if (visited.has(pointKey)) continue;
-
-      const stack = [pointKey];
-      const component = [];
-
-      while (stack.length) {
-        const current = stack.pop();
-        if (visited.has(current)) continue;
-        visited.add(current);
-        component.push(current);
-
-        for (const neighbor of adjacency.get(current) || []) {
-          if (!visited.has(neighbor)) {
-            stack.push(neighbor);
+  function handleWindowPointerUp(e) {
+    if (drag && e.pointerId !== drag.pointerId) return;
+    removeDragListeners();
+    if (!drag) return;
+    if (drag.moved) {
+      if (drag.held && localSim) {
+        let vx = 0, vy = 0;
+        const first = drag.samples[0], last = drag.samples[drag.samples.length - 1];
+        // A pause before release throws nothing
+        if (first && last && last.t > first.t && performance.now() - last.t < 50) {
+          vx = (last.x - first.x) / (last.t - first.t) * WALL_TICK_MS * THROW_KEEP;
+          vy = (last.y - first.y) / (last.t - first.t) * WALL_TICK_MS * THROW_KEEP;
+          const speed = Math.hypot(vx, vy);
+          if (speed > WALL_THROW_MAX) {
+            vx *= WALL_THROW_MAX / speed;
+            vy *= WALL_THROW_MAX / speed;
           }
         }
+        localSim.drop(drag.id, LOCAL_HOLDER, vx, vy);
+        runLocalSim();
       }
-
-      if (component.length <= 2) {
-        for (const key of component) {
-          smallComponentPoints.add(key);
-        }
-      }
+      suppressClickUntil = performance.now() + CLICK_SUPPRESS_MS;
     }
-
-    return lines.filter((line) => {
-      const startKey = createPointKey(line.x1, line.y1);
-      const endKey = createPointKey(line.x2, line.y2);
-      if (smallComponentPoints.has(startKey) && smallComponentPoints.has(endKey)) {
-        return false;
-      }
-      return (pointUsage.get(startKey) || 0) > 1 || (pointUsage.get(endKey) || 0) > 1;
-    });
+    drag = null;
+    draggingId = null;
   }
 
-  function buildVoronoiGeometry(artLayout, baseSites, board = getBoardMetrics()) {
-    const field = getVoronoiFieldRect(board);
-    const sites = dedupeSites(baseSites);
-    const chosenVertices = artLayout.map(({ centerX, centerY }) => ({
-      x: centerX,
-      y: centerY,
-      kind: 'chosen-vertex'
-    }));
-
-    if (sites.length < 3) {
-      return { lines: [], siteMarkers: chosenVertices };
-    }
-
-    const delaunay = Delaunator.from(sites, point => point.x, point => point.y);
-    const triangleCenters = [];
-
-    for (let t = 0; t < delaunay.triangles.length; t += 3) {
-      const a = sites[delaunay.triangles[t]];
-      const b = sites[delaunay.triangles[t + 1]];
-      const c = sites[delaunay.triangles[t + 2]];
-      triangleCenters.push(circumcenter(a.x, a.y, b.x, b.y, c.x, c.y));
-    }
-
-    const lines = [];
-    const boundarySeen = new Set();
-
-    for (let edge = 0; edge < delaunay.halfedges.length; edge++) {
-      const opposite = delaunay.halfedges[edge];
-      const triangleIndex = Math.floor(edge / 3);
-      const center = triangleCenters[triangleIndex];
-      if (!center) continue;
-
-      const nextEdge = (edge % 3 === 2) ? edge - 2 : edge + 1;
-      const pIndex = delaunay.triangles[edge];
-      const qIndex = delaunay.triangles[nextEdge];
-      const p = sites[pIndex];
-      const q = sites[qIndex];
-
-      if (opposite >= 0) {
-        if (edge > opposite) continue;
-        const otherCenter = triangleCenters[Math.floor(opposite / 3)];
-        if (!otherCenter) continue;
-        if (Math.hypot(otherCenter.x - center.x, otherCenter.y - center.y) > MAX_VORONOI_LINE_LENGTH) continue;
-        lines.push({
-          x1: center.x,
-          y1: center.y,
-          x2: otherCenter.x,
-          y2: otherCenter.y
-        });
-        continue;
+  function cancelDrag() {
+    removeDragListeners();
+    if (drag?.moved) {
+      if (drag.held && localSim) {
+        localSim.drop(drag.id, LOCAL_HOLDER, 0, 0);
+        runLocalSim();
       }
+      suppressClickUntil = performance.now() + CLICK_SUPPRESS_MS;
+    }
+    drag = null;
+    draggingId = null;
+  }
 
-      const key = [Math.min(pIndex, qIndex), Math.max(pIndex, qIndex)].join(':');
-      if (boundarySeen.has(key)) continue;
-      boundarySeen.add(key);
+  // --- Works-in-progress shelf ---
 
-      const midX = (p.x + q.x) / 2;
-      const midY = (p.y + q.y) / 2;
-      let normalX = q.y - p.y;
-      let normalY = -(q.x - p.x);
-      const toCenterX = center.x - midX;
-      const toCenterY = center.y - midY;
-      if ((normalX * toCenterX) + (normalY * toCenterY) < 0) {
-        normalX *= -1;
-        normalY *= -1;
-      }
+  function handleWipPointerDown(item, e) {
+    if (!item.canManage || item.claimed || !toBoardPoint || !onWipPlace || wipDrag || drag) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (e.target?.closest?.('.wip-delete')) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const point = toBoardPoint(e.clientX, e.clientY);
+    wipDrag = {
+      item,
+      pointerId: e.pointerId,
+      threshold: e.pointerType === 'mouse' ? DRAG_START_PX : TOUCH_DRAG_START_PX,
+      startX: e.clientX,
+      startY: e.clientY,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      x: point.x,
+      y: point.y,
+      moved: false
+    };
+    window.addEventListener('pointermove', handleWipPointerMove);
+    window.addEventListener('pointerup', handleWipPointerUp);
+    window.addEventListener('pointercancel', handleWipPointerCancel);
+    window.addEventListener('pointerdown', handleWipExtraPointerDown, true);
+  }
 
-      const clipped = clipLineToRect(center, { x: normalX, y: normalY }, field);
-      if (Math.hypot(clipped.x - center.x, clipped.y - center.y) > MAX_VORONOI_LINE_LENGTH) continue;
-      lines.push({
-        x1: center.x,
-        y1: center.y,
-        x2: clipped.x,
-        y2: clipped.y
+  function handleWipPointerMove(e) {
+    if (!wipDrag || e.pointerId !== wipDrag.pointerId) return;
+    if (!wipDrag.moved && Math.hypot(e.clientX - wipDrag.startX, e.clientY - wipDrag.startY) < wipDrag.threshold) return;
+    e.preventDefault();
+    const point = toBoardPoint(e.clientX, e.clientY);
+    wipDrag = { ...wipDrag, clientX: e.clientX, clientY: e.clientY, x: point.x, y: point.y, moved: true };
+  }
+
+  function removeWipListeners() {
+    window.removeEventListener('pointermove', handleWipPointerMove);
+    window.removeEventListener('pointerup', handleWipPointerUp);
+    window.removeEventListener('pointercancel', handleWipPointerCancel);
+    window.removeEventListener('pointerdown', handleWipExtraPointerDown, true);
+  }
+
+  function handleWipExtraPointerDown(e) {
+    if (wipDrag && e.pointerId !== wipDrag.pointerId) cancelWipDrag();
+  }
+
+  function handleWipPointerCancel(e) {
+    if (wipDrag && e.pointerId === wipDrag.pointerId) cancelWipDrag();
+  }
+
+  async function handleWipPointerUp(e) {
+    if (wipDrag && e.pointerId !== wipDrag.pointerId) return;
+    removeWipListeners();
+    const dropped = wipDrag;
+    wipDrag = null;
+    if (!dropped?.moved) return;
+    const onBoard = dropped.x >= 0 && dropped.y >= 0 && dropped.x <= boardWidth && dropped.y <= boardHeight;
+    if (!onBoard) return;
+    await onWipPlace(dropped.item, dropped.x, dropped.y);
+  }
+
+  function cancelWipDrag() {
+    removeWipListeners();
+    wipDrag = null;
+  }
+
+  async function handleWipDelete(item) {
+    clearTimeout(deleteConfirmTimer);
+    if (pendingDeleteId !== item.id) {
+      pendingDeleteId = item.id;
+      deleteConfirmTimer = setTimeout(() => { pendingDeleteId = null; }, DELETE_CONFIRM_MS);
+      return;
+    }
+    pendingDeleteId = null;
+    const result = await wsClient?.requestFloatingWall?.({ a: 'wipDelete', id: item.id });
+    if (!result?.ok) onToast?.(result?.error || 'Could not delete that piece', 3000, 'error');
+  }
+
+  // Board touches are preventDefault()ed by TouchHandler, so a tap never becomes a click: act on
+  // pointerup for touch and pen, and ignore the click that some browsers still send
+  function handleWipDeletePointerUp(item, e) {
+    if (e.pointerType === 'mouse') return;
+    lastWipDeleteTapAt = performance.now();
+    e.preventDefault();
+    handleWipDelete(item);
+  }
+
+  function handleWipDeleteClick(item) {
+    if (performance.now() - lastWipDeleteTapAt < POINTER_CLICK_SUPPRESS_MS) return;
+    handleWipDelete(item);
+  }
+
+  // --- Detach flight ---
+
+  function setArriving(id, arriving) {
+    const next = new Set(arrivingIds);
+    if (arriving) next.add(id);
+    else next.delete(id);
+    arrivingIds = next;
+  }
+
+  // Screen rect of a board-px rect, measured through the mount so zoom, pan, rotation and flip all apply
+  function measureBoardRect({ x, y, w, h }) {
+    const probe = document.createElement('div');
+    Object.assign(probe.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      width: `${w}px`,
+      height: `${h}px`,
+      transform: `translate(${x}px, ${y}px)`,
+      visibility: 'hidden',
+      pointerEvents: 'none'
+    });
+    cardsElement.appendChild(probe);
+    const rect = probe.getBoundingClientRect();
+    probe.remove();
+    return rect;
+  }
+
+  // Board px → this mount's space, which is counter-flipped when the canvas is
+  function toMountRect({ x, y, w, h }) {
+    return isCanvasFlipped?.() ? { x: boardWidth - x - w, y, w, h } : { x, y, w, h };
+  }
+
+  /**
+   * A copy of just-detached art lifts off the board and arcs into its new shelf card. Called by
+   * SelectTool for the detacher (with the image as a data URL) and on a server `fly` for everyone
+   * else (with the shelf image URL). `rect` is the board px rect it was cut from.
+   */
+  export function flyToShelf(id, src, rect) {
+    if (!showDetachFlights || !id || !src || !rect || !cardsElement || pendingFlights.has(id)) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const ghost = new Image();
+    ghost.src = src;
+    // Other clients have to fetch the image: fly once it's decoded, not as an empty box
+    const ready = typeof ghost.decode === 'function' ? ghost.decode().catch(() => {}) : Promise.resolve();
+    pendingFlights.set(id, { ghost, rect, ready });
+    setArriving(id, true);
+    // The shelf update might never show this piece (deleted meanwhile, a reconnect): don't hide its card forever
+    setTimeout(() => {
+      if (pendingFlights.delete(id)) setArriving(id, false);
+    }, FLIGHT_WAIT_MS);
+    launchPendingFlights();
+  }
+
+  // The detach reply usually beats the shelf update, so a flight may have to wait for its card
+  async function launchPendingFlights() {
+    if (!pendingFlights.size) return;
+    await tick();
+    for (const [id, flight] of pendingFlights) {
+      if (flight.launching) continue;
+      const target = cardsElement?.querySelector(`[data-wip-id="${CSS.escape(id)}"] .wip-image`);
+      if (!target) continue;
+      flight.launching = true;
+      flight.ready.then(() => {
+        // Timed out or unmounted while the image loaded
+        if (pendingFlights.get(id) !== flight || !cardsElement) return;
+        pendingFlights.delete(id);
+        launchFlight(id, flight, target);
       });
     }
-
-    return {
-      lines: pruneIsolatedLines(lines),
-      siteMarkers: [
-        ...createVoronoiVertices(baseSites, board, { includeBoard: true }).map(site => ({ ...site, kind: 'vertex' })),
-        ...chosenVertices
-      ]
-    };
   }
 
-  $effect(() => {
-    const currentItems = items;
-    const excludeIds = new Set((floatingGalleryExcludeIds || []).filter(Boolean));
+  function launchFlight(id, { ghost, rect }, target) {
+    const land = () => {
+      setArriving(id, false);
+      landedId = id;
+      clearTimeout(landedTimer);
+      landedTimer = setTimeout(() => {
+        if (landedId === id) landedId = null;
+      }, LAND_MS);
+    };
 
-    untrack(() => {
-      // Remove excluded items from their slots
-      for (let i = 0; i < NUM_SLOTS; i++) {
-        if (slotAssignments[i] && excludeIds.has(slotAssignments[i].id)) {
-          slotAssignments[i] = null;
-        }
-      }
-
-      // Update already-slotted items with fresh data
-      const slottedIds = new Set();
-      for (let i = 0; i < NUM_SLOTS; i++) {
-        if (!slotAssignments[i]) continue;
-        const updated = currentItems.find(item => item.id === slotAssignments[i].id);
-        if (updated) slotAssignments[i] = updated;
-        slottedIds.add(slotAssignments[i].id);
-      }
-
-      // Assign new items to the first empty slot in order
-      for (const item of currentItems) {
-        if (excludeIds.has(item.id) || slottedIds.has(item.id)) continue;
-        const emptySlot = slotAssignments.findIndex(s => s === null);
-        if (emptySlot === -1) break;
-        slotAssignments[emptySlot] = item;
-        slottedIds.add(item.id);
-      }
-    });
-  });
-
-  let slotSeed = $derived.by(() => createSlotSeed(floatingGallerySeed));
-  let layoutBoard = $derived.by(() => getLayoutBoardMetrics());
-  let baseSites = $derived.by(() => createVoronoiBaseSites(layoutBoard, slotSeed));
-  let visualBaseSites = $derived.by(() => (
-    createVoronoiBaseSites(layoutBoard, slotSeed ^ 0x6d2b79f5, { includeBoard: true })
-  ));
-
-  let precomputedSlots = $derived.by(() => {
-    if (!enabled) return [];
-    return createSlotLayout(NUM_SLOTS, baseSites, layoutBoard);
-  });
-
-  let projectedSlots = $derived.by(() => createProjectedSlots(precomputedSlots));
-
-  let positionedItems = $derived.by(() => projectedSlots.map((slot, i) => ({
-    ...slot,
-    item: slotAssignments[i] ?? null,
-  })));
-
-  let visiblePositionedItems = $derived(positionedItems.filter(({ item }) => !!item));
-
-  let voronoiGeometry = $derived.by(() => projectGeometry(
-    enabled && SHOW_VORONOI_WEB
-      ? (floatingGalleryVoronoi?.lines
-        ? floatingGalleryVoronoi
-        : buildVoronoiGeometry(
-          precomputedSlots.map(s => ({ centerX: s.centerX, centerY: s.centerY })),
-          visualBaseSites,
-          layoutBoard
-        ))
-      : { lines: [], siteMarkers: [] }
-  ));
-  let voronoiLines = $derived(voronoiGeometry.lines);
-  let voronoiSiteMarkers = $derived(voronoiGeometry.siteMarkers);
-
-  export function addItem(item) {
-    if (items.some(existing => existing.id === item.id)) {
+    // Measured at launch, so a pan or zoom while the image loaded doesn't throw it off
+    const from = measureBoardRect(toMountRect(rect));
+    if (typeof ghost.animate !== 'function' || !ghost.naturalWidth || from.width < 1 || from.height < 1) {
+      land();
       return;
     }
 
-    items = [...items, item].slice(-FETCH_LIMIT);
+    // Land where the shelf shows the art: inside the image padding, fitted to the art's shape
+    const box = target.getBoundingClientRect();
+    const pad = WIP_IMAGE_PAD * (box.width / (target.offsetWidth || box.width));
+    const innerW = Math.max(1, box.width - pad * 2);
+    const innerH = Math.max(1, box.height - pad * 2);
+    const aspect = from.width / from.height;
+    const toW = Math.min(innerW, innerH * aspect);
+    const endScale = toW / from.width;
+    const dx = box.left + pad + (innerW - toW) / 2 - from.left;
+    const dy = box.top + pad + (innerH - toW / aspect) / 2 - from.top;
+
+    // Lift, then toss along a curve that peaks above the higher end of the trip
+    const liftY = -10;
+    const liftScale = 1.04;
+    const distance = Math.hypot(dx, dy);
+    const cx = dx / 2;
+    const cy = Math.min(liftY, dy) - Math.min(220, distance * 0.35);
+    const keyframes = [
+      { offset: 0, transform: 'translate(0px, 0px) scale(1)' },
+      { offset: FLIGHT_LIFT_AT, transform: `translate(0px, ${liftY}px) scale(${liftScale})` }
+    ];
+    for (let i = 1; i <= FLIGHT_STEPS; i++) {
+      const t = i / FLIGHT_STEPS, u = 1 - t;
+      const x = 2 * u * t * cx + t * t * dx;
+      const y = u * u * liftY + 2 * u * t * cy + t * t * dy;
+      const scale = liftScale + (endScale - liftScale) * t * t;
+      keyframes.push({
+        offset: FLIGHT_LIFT_AT + (1 - FLIGHT_LIFT_AT) * t,
+        transform: `translate(${x}px, ${y}px) scale(${scale})`
+      });
+    }
+
+    ghost.alt = '';
+    ghost.draggable = false;
+    Object.assign(ghost.style, {
+      position: 'fixed',
+      left: `${from.left}px`,
+      top: `${from.top}px`,
+      width: `${from.width}px`,
+      height: `${from.height}px`,
+      margin: '0',
+      transformOrigin: '0 0',
+      pointerEvents: 'none',
+      zIndex: '10000',
+      filter: 'drop-shadow(0 12px 18px rgba(0, 0, 0, 0.45))',
+      willChange: 'transform'
+    });
+    // Portalled: inside #boards it would pass under the board canvas
+    document.body.appendChild(ghost);
+    flightElements.add(ghost);
+
+    const animation = ghost.animate(keyframes, {
+      duration: Math.max(600, Math.min(1100, 450 + distance * 0.35)),
+      easing: 'cubic-bezier(0.45, 0, 0.25, 1)',
+      fill: 'forwards'
+    });
+    const finish = () => {
+      if (!flightElements.delete(ghost)) return;
+      ghost.remove();
+      land();
+    };
+    animation.onfinish = finish;
+    animation.oncancel = finish;
   }
 
+  // Kept for App.handleFloatingArtUpdate: the wall now learns about new art from the server
+  export function addItem() {}
+
   export function updateItem(item) {
-    const index = items.findIndex(existing => existing.id === item.id);
-    if (index >= 0) {
-      items[index] = item;
-      items = [...items];
-    }
+    if (item?.id) setPieceLikes(item.id, item.likesCount);
   }
 
   $effect(() => {
-    if (!enabled || !roomId) return;
-    const configKey = buildFetchConfigKey();
-    if (requestedRoom === roomId && requestedConfigKey === configKey) return;
-    requestedRoom = roomId;
-    requestedConfigKey = configKey;
-    fetchFloatingArt();
+    if (!enabled || !wsClient || !roomId) return;
+    wsClient.on('floating_wall', handleWallMessage);
+    send(slowMode ? { a: 'hello', slow: 1 } : { a: 'hello' });
+    fetchLikedIds();
+    return () => {
+      wsClient.on('floating_wall', () => {});
+      cancelDrag();
+      cancelWipDrag();
+      stopLocalSim();
+      localSim = null;
+      // Stop the server sending wall traffic this client no longer shows
+      send({ a: 'bye' });
+      clearTimeout(deleteConfirmTimer);
+      clearTimeout(hideConfirmTimer);
+      clearTimeout(landedTimer);
+      clearTimeout(metaFlushTimer);
+      metaFlushTimer = null;
+      pendingMeta.clear();
+      pendingFlights.clear();
+      for (const ghost of flightElements) ghost.remove();
+      flightElements.clear();
+    };
   });
-
 </script>
 
 {#if enabled}
   <div class="floating-art-container">
-    {#if SHOW_VORONOI_WEB}
-      <svg class="voronoi-web">
-        {#each voronoiLines as line, index (`${index}:${line.x1}:${line.y1}:${line.x2}:${line.y2}`)}
-          <line
-            x1={line.x1}
-            y1={line.y1}
-            x2={line.x2}
-            y2={line.y2}
-            stroke="rgba(0, 212, 170, 0.42)"
-            stroke-width="1.35"
+    <div class="floating-art-cards" bind:this={cardsElement}>
+      {#each pieces as piece (piece.id)}
+        {#if piece.active}
+          <FloatingArt
+            item={piece.item || { id: piece.id }}
+            loaded={!!piece.item}
+            onNeedMeta={requestMeta}
+            x={piece.x - WALL_CARD_W / 2}
+            y={piece.y - WALL_CARD_H / 2}
+            liked={likedIds.has(piece.id)}
+            likesCount={piece.item?.likesCount || 0}
+            dragging={draggingId === piece.id}
+            jump={piece.jump}
+            slow={slowMode}
+            onPointerDown={(e) => handleCardPointerDown(piece, e)}
+            {isClickSuppressed}
+            onLike={likeFloatingItem}
+            {onComment}
+            {onAuthorClick}
+            {canHide}
+            hideConfirm={pendingHideId === piece.id}
+            onHide={hideFloatingItem}
           />
-        {/each}
-
-        {#each voronoiSiteMarkers as site, index (`site:${index}:${site.x}:${site.y}:${site.kind}`)}
-          <circle
-            cx={site.x}
-            cy={site.y}
-            r={site.kind === 'chosen-vertex' ? 3.5 : 1.75}
-            fill={site.kind === 'chosen-vertex'
-              ? 'rgba(0, 212, 170, 0.98)'
-              : 'rgba(0, 212, 170, 0.55)'}
-          />
-        {/each}
-      </svg>
-    {/if}
-
-    <div class="floating-art-cards">
-      {#each visiblePositionedItems as { item, x, y } (item.id)}
-        <FloatingArt
-          {item}
-          {x}
-          {y}
-          liked={likedIdLookup.has(item.id)}
-          likesCount={item.likesCount || 0}
-          onLike={likeFloatingItem}
-          {onComment}
-        />
+        {/if}
       {/each}
+
+      {#if hasLocalMoves && boardWidth}
+        <!-- Only this user sees their arrangement; this puts the room's back -->
+        <button
+          class="wall-reset"
+          style="transform: translate({boardWidth / 2}px, -32px) translateX(-50%);"
+          title="Put the pieces you moved back where the room has them. Only you see your arrangement."
+          onpointerdown={(e) => e.stopPropagation()}
+          onclick={handleResetClick}
+          onpointerup={handleResetPointerUp}
+        >Reset layout</button>
+      {/if}
+
+      {#if wipItems.length}
+        <div class="wip-label" style="transform: translate({(shelf.rect.l + shelf.rect.r) / 2}px, {shelf.rect.t - 24}px) translateX(-50%);">Works in progress</div>
+        {#each wipItems as item, i (item.id)}
+          {@const slot = shelf.slot(i)}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="wip-card"
+            class:manageable={item.canManage && !item.claimed}
+            class:claimed={item.claimed}
+            class:lifted={wipDrag?.moved && wipDrag.item.id === item.id}
+            class:arriving={arrivingIds.has(item.id)}
+            class:landed={landedId === item.id}
+            data-wip-id={item.id}
+            style="transform: translate({slot.x}px, {slot.y}px); width: {WIP_SHELF.CARD_W}px; height: {WIP_SHELF.CARD_H}px;"
+            title={item.claimed ? 'Someone is placing this piece' : item.canManage ? 'Drag onto the board to put it back' : `Work in progress by ${item.owner}`}
+            onpointerdown={(e) => handleWipPointerDown(item, e)}
+          >
+            <div class="wip-image">
+              <img src={`${apiBaseUrl}/api/wip/${item.id}`} alt={`Work in progress by ${item.owner}`} loading="lazy" decoding="async" draggable="false" />
+            </div>
+            <div class="wip-footer">
+              <span class="wip-owner">{item.owner}</span>
+              {#if item.canManage && !item.claimed}
+                <button
+                  class="wip-delete"
+                  class:confirm={pendingDeleteId === item.id}
+                  title={pendingDeleteId === item.id ? 'Tap again to delete permanently' : 'Delete this piece'}
+                  onclick={() => handleWipDeleteClick(item)}
+                  onpointerup={(e) => handleWipDeletePointerUp(item, e)}
+                >{pendingDeleteId === item.id ? 'Delete?' : '×'}</button>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      {/if}
+
+      {#if wipDrag?.moved}
+        {@const zoom = getBoardZoom?.() || 1}
+        <!-- Screen-space and portalled, at the size it will be pasted -->
+        <div
+          use:portal
+          class="wip-ghost"
+          style="left: {wipDrag.clientX}px; top: {wipDrag.clientY}px; width: {wipDrag.item.w * zoom}px; height: {wipDrag.item.h * zoom}px;"
+        >
+          <img src={`${apiBaseUrl}/api/wip/${wipDrag.item.id}`} alt="" draggable="false" />
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -984,23 +946,177 @@
     contain: layout style;
   }
 
-  .voronoi-web {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-    z-index: -1;
-    opacity: 1;
-    overflow: visible;
-  }
-
   .floating-art-cards {
     position: relative;
     width: 100%;
     height: 100%;
     z-index: 4;
     pointer-events: none;
+  }
+
+  .wall-reset {
+    position: absolute;
+    left: 0;
+    top: 0;
+    padding: 3px 10px;
+    border: 1px solid var(--color-border, #555);
+    border-radius: 999px;
+    background: var(--color-bg-secondary, #222);
+    color: var(--color-text-secondary, #aaa);
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    pointer-events: auto;
+    touch-action: none;
+    z-index: 5;
+  }
+
+  .wall-reset:hover,
+  .wall-reset:focus-visible {
+    color: var(--color-text-primary, #fff);
+    border-color: var(--color-accent, #00d4aa);
+  }
+
+  .wip-label {
+    position: absolute;
+    left: 0;
+    top: 0;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-text-secondary, #aaa);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  .wip-card {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-bg-secondary, #222);
+    border: 1px dashed var(--color-border, #555);
+    border-radius: 8px;
+    overflow: hidden;
+    pointer-events: auto;
+    user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: none;
+    z-index: 4;
+    /* The row re-centres when a piece joins or leaves: slide rather than jump */
+    transition: transform 250ms ease;
+  }
+
+  /* Held back until the detach flight lands in it */
+  .wip-card.arriving {
+    opacity: 0;
+    transition: none;
+  }
+
+  /* `scale` composes with the positioning transform instead of replacing it */
+  .wip-card.landed {
+    animation: wipLand 420ms cubic-bezier(0.2, 0.8, 0.3, 1.2);
+  }
+
+  @keyframes wipLand {
+    0% {
+      scale: 0.92;
+      box-shadow: 0 0 0 3px var(--color-accent, #00d4aa);
+    }
+    55% {
+      scale: 1.05;
+    }
+    100% {
+      scale: 1;
+      box-shadow: 0 0 0 0 transparent;
+    }
+  }
+
+  .wip-card.manageable {
+    cursor: grab;
+  }
+
+  .wip-card.claimed,
+  .wip-card.lifted {
+    opacity: 0.45;
+  }
+
+  .wip-image {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+    /* Light checkerboard, same palette as the layer preview, so dark and faint strokes stay readable */
+    background-color: #f3f1ec;
+    background-image:
+      linear-gradient(45deg, #ddd9d0 25%, transparent 25%, transparent 75%, #ddd9d0 75%),
+      linear-gradient(45deg, #ddd9d0 25%, transparent 25%, transparent 75%, #ddd9d0 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 8px 8px;
+  }
+
+  .wip-image img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  .wip-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    height: 34px;
+    padding: 0 8px 0 10px;
+  }
+
+  .wip-owner {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--color-text-secondary, #aaa);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .wip-delete {
+    flex-shrink: 0;
+    min-width: 26px;
+    min-height: 24px;
+    border: none;
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 13px;
+    line-height: 1.2;
+    cursor: pointer;
+    background: var(--color-bg-tertiary, #1a1a1a);
+    color: var(--color-text-secondary, #aaa);
+  }
+
+  .wip-delete:hover,
+  .wip-delete.confirm {
+    background: #b3261e;
+    color: #fff;
+  }
+
+  .wip-ghost {
+    position: fixed;
+    transform: translate(-50%, -50%);
+    opacity: 0.75;
+    outline: 2px dashed var(--color-accent, #00d4aa);
+    pointer-events: none;
+    z-index: 10000;
+  }
+
+  .wip-ghost img {
+    width: 100%;
+    height: 100%;
+    display: block;
   }
 </style>

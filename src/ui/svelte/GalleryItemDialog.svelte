@@ -1,5 +1,5 @@
 <script>
-  import { appState } from '../../state.svelte.js';
+  import { appState, showProfile } from '../../state.svelte.js';
 
   let { apiBaseUrl = '', galleryBaseUrl = '/gallery', onClose = null } = $props();
 
@@ -143,7 +143,18 @@
             <h2 class="title">{item.title || 'Untitled'}</h2>
 
             <div class="meta">
-              <span class="author">by <strong>{item.author}</strong></span>
+              <span class="author">by
+                {#if item.authorHasProfile && item.author}
+                  <button
+                    type="button"
+                    class="author-link"
+                    title={`View ${item.author}'s profile`}
+                    onclick={() => showProfile(item.author)}
+                  >{item.author}</button>
+                {:else}
+                  <strong>{item.author || 'Anonymous'}</strong>
+                {/if}
+              </span>
               <span class="date">{formatDate(item.createdAt)}</span>
             </div>
 
@@ -317,8 +328,24 @@
     color: var(--color-text-secondary, #aaa);
   }
 
-  .author strong {
+  .author strong,
+  .author-link {
     color: var(--color-accent, #00d4aa);
+    font-weight: 700;
+  }
+
+  .author-link {
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .author-link:hover,
+  .author-link:focus-visible {
+    text-decoration: underline;
   }
 
   .tags {

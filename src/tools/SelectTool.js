@@ -565,6 +565,7 @@ export class SelectTool extends Tool {
       stamp: document.getElementById('selMenuStamp'),
       apply: document.getElementById('selMenuApply'),
       save: document.getElementById('selMenuSave'),
+      detach: document.getElementById('selMenuDetach'),
       cancel: document.getElementById('selMenuCancel'),
       merge: document.getElementById('selMenuMerge'),
       mergeUp: document.getElementById('selMenuMergeUp'),
@@ -584,6 +585,7 @@ export class SelectTool extends Tool {
     this.menuElements.stamp.addEventListener('click', () => this.stamp());
     this.menuElements.apply.addEventListener('click', () => this.deselect());
     this.menuElements.save.addEventListener('click', () => this.saveSelection());
+    this.menuElements.detach?.addEventListener('click', () => this.detachSelection());
     this.menuElements.cancel.addEventListener('click', () => this.cancelSelection());
     this.menuElements.mergeUp?.addEventListener('click', () => this.mergeUp());
     this.menuElements.mergeDown?.addEventListener('click', () => this.mergeDown());
@@ -646,6 +648,9 @@ export class SelectTool extends Tool {
     // A floating selection without _restoreData was cloned/pasted, not lifted —
     // there is nothing to put back, so the Cancel button is removed entirely.
     const isEphemeralFloat = hasMoved && !this._restoreData;
+    // A piece dragged in from the works-in-progress shelf: Cancel returns it to the shelf, and it
+    // can't be detached or stamped (either would leave a copy behind when it goes back)
+    const isShelfPlacement = !!this._pendingPlacement;
 
     const activeLayer = this.board.app?.self?.activeLayer ?? 0;
     const layerCount = this.board.layerManager?.layerGroups?.length ?? 0;
@@ -661,10 +666,12 @@ export class SelectTool extends Tool {
     this.menuElements.clone?.classList.toggle('hidden', hasMoved);
     this.menuElements.fill.classList.toggle('hidden', hasMoved);
     this.menuElements.flip.classList.toggle('hidden', false);
-    this.menuElements.stamp.classList.toggle('hidden', !hasMoved);
+    this.menuElements.stamp.classList.toggle('hidden', !hasMoved || isShelfPlacement);
+    this.menuElements.brush.classList.toggle('hidden', isShelfPlacement);
     this.menuElements.apply.classList.toggle('hidden', !hasMoved);
     this.menuElements.save.classList.toggle('hidden', false);
-    this.menuElements.cancel.classList.toggle('hidden', isEphemeralFloat);
+    this.menuElements.detach?.classList.toggle('hidden', isShelfPlacement || !this.board.app?.canUseImageFeatures?.(false));
+    this.menuElements.cancel.classList.toggle('hidden', isEphemeralFloat && !isShelfPlacement);
     this.menuElements.mergeUp?.classList.toggle('hidden', !canMergeUp);
     this.menuElements.mergeDown?.classList.toggle('hidden', !canMergeDown);
     this.menuElements.mergeAll?.classList.toggle('hidden', !canMergeAll);
@@ -672,8 +679,10 @@ export class SelectTool extends Tool {
 
     this.menuElements.clear.textContent = hasMoved ? 'Remove' : 'Clear';
     this.menuElements.clear.title = hasMoved ? 'Delete selection contents' : 'Clear selection contents';
-    this.menuElements.cancel.textContent = hasMoved ? 'Put back' : 'Cancel';
-    this.menuElements.cancel.title = hasMoved ? 'Restore the lifted selection' : 'Cancel selection';
+    this.menuElements.cancel.textContent = isShelfPlacement ? 'Cancel' : hasMoved ? 'Put back' : 'Cancel';
+    this.menuElements.cancel.title = isShelfPlacement
+      ? 'Return this piece to the works-in-progress shelf'
+      : hasMoved ? 'Restore the lifted selection' : 'Cancel selection';
     if (this.menuElements.mask) {
       this.menuElements.mask.textContent = this.isMaskMode ? 'Unmask' : 'Mask';
       this.menuElements.mask.title = this.isMaskMode ? 'Remove drawing mask' : 'Use selection as drawing mask';
@@ -692,7 +701,8 @@ export class SelectTool extends Tool {
           clone: 8,
           fill: 9,
           obscure: 10,
-          merge: 11
+          merge: 11,
+          detach: 12
         }
       : {
           clear: 0,
@@ -706,7 +716,8 @@ export class SelectTool extends Tool {
           apply: 8,
           save: 9,
           obscure: 10,
-          merge: 11
+          merge: 11,
+          detach: 12
         };
 
     Object.entries(menuOrder).forEach(([key, order]) => {
@@ -2877,6 +2888,11 @@ export class SelectTool extends Tool {
   commitSelection() {
     if (!this.floatingCanvas || !this.selection) return;
 
+    // A piece placed from the WIP shelf is only consumed once it actually lands on the board
+    const placement = this._pendingPlacement;
+    this._pendingPlacement = null;
+    placement?.onCommit?.();
+
     const lm = this.board.layerManager;
     const userId = this.board.app?.self?.id ?? 0;
 
@@ -3121,6 +3137,12 @@ export class SelectTool extends Tool {
   }
 
   clearSelection() {
+    // A shelf placement cleared without committing (cancel, remove, tool switch) goes back to the shelf
+    if (this._pendingPlacement) {
+      const placement = this._pendingPlacement;
+      this._pendingPlacement = null;
+      placement.onDiscard?.();
+    }
     // Deactivate split-composite mode — no floating selection in flight
     this.board.activeSelectionLayer = -1;
     const hasFloating = !!(this.floatingCanvas || (this.floatingLayers && this.floatingLayers.length > 0));
@@ -4472,6 +4494,174 @@ export class SelectTool extends Tool {
       this.hideContextMenu();
     }
 
+    return true;
+  }
+
+  _isModerator() {
+    const app = this.board.app;
+    return Math.max(
+      app?.selfRole ?? 0,
+      app?.selfRoomRole ?? 0,
+      app?.selfGlobalRole ?? 0,
+      app?.self?.role ?? 0,
+      app?.self?.roomRole ?? 0,
+      app?.self?.globalRole ?? 0
+    ) >= 4;
+  }
+
+  /**
+   * Moves the selection off the board onto the room's works-in-progress shelf.
+   * The board is only erased once the server has stored the piece, so a failed
+   * detach never loses the art. Moderators pick who owns it.
+   */
+  async detachSelection() {
+    const app = this.board.app;
+    if (!this.selection || !app?.wsClient?.requestFloatingWall) return false;
+    if (!app.canUseImageFeatures?.(false)) {
+      app.ui?.showToast('Only registered users can detach art', 3000);
+      return false;
+    }
+
+    const canvas = this.getSelectionExportCanvas();
+    const region = this.getSelectionBoardRegion();
+    if (!canvas || !region) return false;
+    const selection = this.selection;
+
+    let ownerSession = null;
+    if (this._isModerator()) {
+      ownerSession = await this._pickDetachOwner();
+      if (ownerSession === undefined || this.selection !== selection) return false;
+    }
+
+    const dataUrl = canvas.toDataURL('image/png');
+    this.hideContextMenu();
+    app.ui?.showToast('Detaching…', 1500);
+    const result = await app.wsClient.requestFloatingWall({
+      a: 'detach',
+      owner: ownerSession,
+      dataUrl,
+      x: region.x,
+      y: region.y,
+      w: region.width,
+      h: region.height
+    });
+
+    if (!result?.ok) {
+      app.ui?.showToast(result?.error || 'Detach failed', 3500, 'error');
+      if (this.selection === selection) this.showContextMenu();
+      return false;
+    }
+
+    if (this.selection === selection) {
+      // A copy of the art lifts off as the board clears and flies into its shelf slot (other clients
+      // get the same flight from the server)
+      app.svelteComponents?.floatingArt?.flyToShelf?.(result.id, dataUrl, {
+        x: region.x,
+        y: region.y,
+        w: region.width,
+        h: region.height
+      });
+      this.deleteSelection();
+      app.ui?.showToast('Moved to the works-in-progress shelf under the board', 3000);
+    } else {
+      app.ui?.showToast('Saved to the shelf, but the selection changed so the board was not cleared', 4500);
+    }
+    return true;
+  }
+
+  /**
+   * Moderator prompt: who owns the detached piece.
+   * @returns {Promise<number|null|undefined>} a user's session index, null for yourself, undefined if dismissed
+   */
+  _pickDetachOwner() {
+    const app = this.board.app;
+    const candidates = [...(app?.users?.entries?.() || [])]
+      .filter(([, user]) => user && user !== app.self && (user.role ?? 0) >= 1 && user.username)
+      .sort((a, b) => a[1].username.localeCompare(b[1].username));
+    if (!candidates.length) return Promise.resolve(null);
+
+    return new Promise((resolve) => {
+      const anchor = this.menuElements?.menu?.getBoundingClientRect();
+      const picker = document.createElement('div');
+      picker.className = 'contextMenu';
+      Object.assign(picker.style, {
+        display: 'block',
+        position: 'fixed',
+        left: `${Math.round(anchor?.left ?? 120)}px`,
+        top: `${Math.round((anchor?.bottom ?? 120) + 6)}px`,
+        zIndex: '10000',
+        maxHeight: '280px',
+        overflowY: 'auto'
+      });
+
+      const title = document.createElement('div');
+      title.textContent = 'Detach for…';
+      Object.assign(title.style, { padding: '6px 10px', fontSize: '12px', opacity: '0.7' });
+      picker.appendChild(title);
+
+      const finish = (value) => {
+        document.removeEventListener('pointerdown', onOutside, true);
+        document.removeEventListener('keydown', onKey, true);
+        picker.remove();
+        resolve(value);
+      };
+      const onOutside = (e) => { if (!picker.contains(e.target)) finish(undefined); };
+      const onKey = (e) => {
+        if (e.key !== 'Escape') return;
+        e.stopPropagation();
+        finish(undefined);
+      };
+      const addOption = (label, value) => {
+        const button = document.createElement('button');
+        button.className = 'menuItem';
+        button.textContent = label;
+        button.addEventListener('click', () => finish(value));
+        picker.appendChild(button);
+      };
+
+      addOption('Me', null);
+      for (const [sessionIndex, user] of candidates) addOption(user.username, sessionIndex);
+
+      document.body.appendChild(picker);
+      setTimeout(() => {
+        document.addEventListener('pointerdown', onOutside, true);
+        document.addEventListener('keydown', onKey, true);
+      }, 0);
+    });
+  }
+
+  /**
+   * Floats an image on the board centred at (centerX, centerY), at its natural size, as a normal
+   * paste. `placement.onCommit` fires if it is committed; `placement.onDiscard` if it is dropped
+   * any other way (cancel, remove, tool switch).
+   * @param {CanvasImageSource & { naturalWidth?: number, naturalHeight?: number }} image
+   * @param {{ onCommit?: () => void, onDiscard?: () => void }|null} [placement]
+   */
+  placeImageAt(image, centerX, centerY, placement = null) {
+    if (!this.board.app?.canUseImageFeatures?.(true)) return false;
+
+    this.commitSelection();
+    this.clearSelection();
+
+    const width = Math.max(1, Math.round(image.naturalWidth || image.width));
+    const height = Math.max(1, Math.round(image.naturalHeight || image.height));
+    const x = Math.round(centerX - width / 2);
+    const y = Math.round(centerY - height / 2);
+
+    this.selection = { x, y, width, height };
+    this.floatingCanvas = document.createElement('canvas');
+    this.floatingCanvas.width = width;
+    this.floatingCanvas.height = height;
+    this.floatingCtx = this.floatingCanvas.getContext('2d');
+    this.floatingCtx.drawImage(image, 0, 0, width, height);
+    this._sourceCropForRemote = null;
+    this._pendingPlacement = placement;
+
+    this._finalizeFloatingSelection(x, y, width, height);
+
+    if (this.board.app?.self?.tool !== 'select') {
+      this.board.app?.selectTool('select');
+    }
     return true;
   }
 

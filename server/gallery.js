@@ -208,6 +208,21 @@ export function setFloatingArtBroadcaster(callback) {
   broadcastFloatingArtUpdate = callback;
 }
 
+// Floating art wall hooks: { likes(id, likesCount), added(tags, wallItem), removed(id) }
+let galleryWallListener = null;
+
+export function setGalleryWallListener(listener) {
+  galleryWallListener = listener;
+}
+
+function notifyWall(event, ...args) {
+  try {
+    galleryWallListener?.[event]?.(...args);
+  } catch (err) {
+    console.error(`[Gallery] Wall listener "${event}" failed:`, err);
+  }
+}
+
 /**
  * Set the callback for posting opt-in gallery uploads to Discord.
  * @param {Function} callback - Function to call with the saved gallery item
@@ -294,6 +309,8 @@ function toClientGalleryItem(item, likedGalleryIds = null, viewerId = null) {
     url: item.url,
     thumbUrl: item.thumbUrl || item.url,
     author: tagUsername ? item.author : ANONYMOUS_AUTHOR,
+    // A registered, credited author: the name opens their profile
+    authorHasProfile: tagUsername && !!item.authorId && !!item.author,
     tagUsername,
     title: item.title || '',
     description: item.description || '',
@@ -640,6 +657,8 @@ export async function handleGalleryUpload(req, res) {
 
     json(res, 201, item);
 
+    notifyWall('added', doc.tags, toWallItem({ ...doc, _id: result.insertedId }));
+
     if (doc.tags.includes('discord') && galleryDiscordPoster) {
       galleryDiscordPoster(item).catch(err => {
         console.error('[Gallery] Discord post error:', err);
@@ -901,6 +920,7 @@ export async function handleGalleryLike(req, res, id) {
         { $inc: { likesCount: -1 } },
         { returnDocument: 'after', projection: { likesCount: 1 } }
       );
+      if (updated) notifyWall('likes', id, updated.likesCount || 0);
       return json(res, 200, { liked: false, likesCount: updated?.likesCount || 0 });
     }
 
@@ -924,6 +944,7 @@ export async function handleGalleryLike(req, res, id) {
     );
 
     const newLikesCount = updated?.likesCount || 1;
+    notifyWall('likes', id, newLikesCount);
 
     // Broadcast to rooms when image first becomes eligible (1 like + room tag).
     // Only items created in the current calendar month participate in the floating
@@ -1492,9 +1513,153 @@ export async function handleGalleryDelete(req, res, id) {
     ]);
 
     json(res, 200, { deleted: true });
+    notifyWall('removed', id);
   } catch (err) {
     console.error('[Gallery] Delete error:', err);
     json(res, 500, { error: 'Failed to delete item' });
+  }
+}
+
+/**
+ * Shape a gallery doc for the floating art wall. `group` clusters an artist's
+ * pieces; anonymous and guest pieces each get their own group so position
+ * never reveals who posted them.
+ */
+export function toWallItem(item) {
+  const id = item._id.toString();
+  const tagUsername = item.tagUsername !== false;
+  return {
+    id,
+    url: item.url,
+    thumbUrl: item.thumbUrl || item.url,
+    author: tagUsername && item.author ? item.author : ANONYMOUS_AUTHOR,
+    authorHasProfile: tagUsername && !!item.authorId && !!item.author,
+    title: item.title || '',
+    likesCount: item.likesCount || 0,
+    animatedUrl: item.animatedUrl || null,
+    group: tagUsername && item.authorId ? `u:${item.authorId}` : `solo:${id}`
+  };
+}
+
+/**
+ * Every gallery piece tagged with the room (most-liked first, capped at
+ * `limit`), plus explicitly included ids, minus excluded ids.
+ * @returns {Promise<Array<ReturnType<typeof toWallItem>>>}
+ */
+export async function loadWallGalleryItems(roomId, { includeIds = [], excludeIds = [], limit = 400 } = {}) {
+  const db = getDB();
+  if (!db) return [];
+
+  const roomTag = normalizeTags(roomId).at(0) || 'lobby';
+  const validId = id => typeof id === 'string' && /^[a-f0-9]{24}$/i.test(id);
+  const exclude = new Set(excludeIds.filter(validId));
+  const include = includeIds.filter(id => validId(id) && !exclude.has(id));
+  const projection = { url: 1, thumbUrl: 1, author: 1, authorId: 1, tagUsername: 1, title: 1, likesCount: 1, animatedUrl: 1, createdAt: 1 };
+
+  const [includedItems, taggedItems] = await Promise.all([
+    include.length > 0
+      ? db.collection('gallery').find({ _id: { $in: include.map(id => new ObjectId(id)) } }, { projection }).toArray()
+      : Promise.resolve([]),
+    db.collection('gallery')
+      .find({
+        tags: roomTag,
+        ...(exclude.size > 0 ? { _id: { $nin: [...exclude].map(id => new ObjectId(id)) } } : {})
+      }, { projection })
+      .sort({ likesCount: -1, createdAt: -1 })
+      .limit(limit)
+      .toArray()
+  ]);
+
+  const seen = new Set();
+  const merged = [];
+  for (const item of [...includedItems, ...taggedItems]) {
+    const id = item._id.toString();
+    if (seen.has(id) || exclude.has(id)) continue;
+    seen.add(id);
+    merged.push(toWallItem(item));
+  }
+  return merged.slice(0, limit);
+}
+
+/**
+ * GET /api/gallery/floating-wall?room=<roomId>&includeId=…&excludeId=…[&hidden=1]
+ * Exactly the pieces the room's floating wall loads (loadWallGalleryItems), so room settings can
+ * show what's really on the board, including a moderator's unsaved include/exclude draft.
+ * With `hidden=1`, the excluded pieces themselves instead, so they can be unhidden.
+ */
+export async function handleFloatingWallList(req, res) {
+  const urlObj = new URL(req.url, 'http://localhost');
+  const room = urlObj.searchParams.get('room') || 'lobby';
+  const validId = id => /^[a-f0-9]{24}$/i.test(id);
+  const includeIds = [...new Set(urlObj.searchParams.getAll('includeId'))].filter(validId).slice(0, 200);
+  const excludeIds = [...new Set(urlObj.searchParams.getAll('excludeId'))].filter(validId).slice(0, 200);
+  try {
+    if (urlObj.searchParams.get('hidden') === '1') {
+      const db = getDB();
+      if (!db) return json(res, 503, { error: 'Database not available' });
+      const docs = excludeIds.length
+        ? await db.collection('gallery')
+          .find({ _id: { $in: excludeIds.map(id => new ObjectId(id)) } }, {
+            projection: { url: 1, thumbUrl: 1, author: 1, authorId: 1, tagUsername: 1, title: 1, likesCount: 1, animatedUrl: 1 }
+          })
+          .toArray()
+        : [];
+      return json(res, 200, { items: docs.map(doc => toWallItem(doc)).map(({ group, ...item }) => item) });
+    }
+    const items = await loadWallGalleryItems(room, { includeIds, excludeIds });
+    // `group` is internal (it carries the author id); the settings list doesn't need it
+    json(res, 200, { items: items.map(({ group, ...item }) => item) });
+  } catch (err) {
+    console.error('[Gallery] Floating wall list error:', err);
+    json(res, 500, { error: 'Failed to fetch floating wall' });
+  }
+}
+
+const WALL_META_MAX_IDS = 60;
+
+/**
+ * GET /api/gallery/wall-meta?ids=<id>,<id>,…
+ * Card details for floating wall pieces: the wall's own messages carry only ids and positions,
+ * and clients fetch these for the cards near their screen. Same author rules as the wall
+ * (toWallItem), minus the internal `group`. Unknown or deleted ids are simply absent.
+ */
+export async function handleWallMeta(req, res) {
+  const db = getDB();
+  if (!db) return json(res, 503, { error: 'Database not available' });
+  const urlObj = new URL(req.url, 'http://localhost');
+  const ids = [...new Set((urlObj.searchParams.get('ids') || '').split(','))]
+    .filter(id => /^[a-f0-9]{24}$/i.test(id))
+    .slice(0, WALL_META_MAX_IDS);
+  if (!ids.length) return json(res, 200, { items: [] });
+  try {
+    const docs = await db.collection('gallery')
+      .find({ _id: { $in: ids.map(id => new ObjectId(id)) } }, {
+        projection: { url: 1, thumbUrl: 1, author: 1, authorId: 1, tagUsername: 1, title: 1, likesCount: 1, animatedUrl: 1 }
+      })
+      .toArray();
+    json(res, 200, { items: docs.map(doc => toWallItem(doc)).map(({ group, ...item }) => item) });
+  } catch (err) {
+    console.error('[Gallery] Wall meta error:', err);
+    json(res, 500, { error: 'Failed to fetch card details' });
+  }
+}
+
+/**
+ * GET /api/gallery/liked-ids — the signed-in user's liked gallery ids, so the
+ * floating wall can fill its hearts without a per-item lookup.
+ */
+export async function handleGalleryLikedIds(req, res) {
+  const token = getBearerToken(req);
+  if (!token) return json(res, 200, { ids: [] });
+  try {
+    const authUser = await getUserFromToken(token, { projection: { likedGalleryIds: 1 } });
+    const ids = Array.isArray(authUser?.likedGalleryIds)
+      ? authUser.likedGalleryIds.map(String).filter(id => /^[a-f0-9]{24}$/i.test(id)).slice(-5000)
+      : [];
+    json(res, 200, { ids });
+  } catch (err) {
+    console.error('[Gallery] Liked ids error:', err);
+    json(res, 500, { error: 'Failed to fetch liked ids' });
   }
 }
 

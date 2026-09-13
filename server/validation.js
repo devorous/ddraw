@@ -694,6 +694,12 @@ export async function sanitizeMessage(data) {
       sanitized.mirrorRegionsJson = sanitizeString(data.mirrorRegionsJson, MAX_MIRROR_REGION_PAYLOAD, { trim: false });
       return sanitized.mirrorRegionsJson ? sanitized : null;
 
+    case T.FLOATING_WALL:
+      // server/floatingWall.js parses and validates the action; a detach carries the image, so bound
+      // it to that controller's detach limit (every other action is held to 1000 chars there)
+      sanitized.floatingWallJson = sanitizeString(data.floatingWallJson, 6 * 1024 * 1024, { trim: false });
+      return sanitized.floatingWallJson ? sanitized : null;
+
     case T.SET_BADGE:
       // handleBroadcast validates the id against SELECTABLE_BADGES / entitlements;
       // we only bound it. With no case here the field was stripped and every badge

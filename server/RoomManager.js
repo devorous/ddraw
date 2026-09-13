@@ -67,6 +67,8 @@ export class Room {
       floatingGalleryIncludeIds: [],
       floatingGalleryExcludeIds: [],
       floatingGalleryVoronoi: null,
+      // Settled floating art wall layout { version, settledAt, pieces: [{ id, x, y }] }; see server/floatingWall.js
+      floatingWall: null,
       boardSize: '1080p',
       // Opt-in perf experiment: layer 0's baked raster becomes a grid of
       // lazily-allocated tile canvases instead of one full-board canvas.
@@ -766,7 +768,9 @@ export class Room {
             { $set: { 'settings.floatingGalleryVoronoi': this.settings.floatingGalleryVoronoi } }
           );
         }
-        this.settings.boardSize = isValidBoardSize(doc.settings?.boardSize)
+        this.settings.floatingWall = Array.isArray(doc.settings?.floatingWall?.pieces)
+          ? doc.settings.floatingWall
+          : null;        this.settings.boardSize = isValidBoardSize(doc.settings?.boardSize)
           ? doc.settings.boardSize
           : '1080p';
         this.settings.tiledCanvasBackingStore = !!doc.settings?.tiledCanvasBackingStore;
@@ -819,7 +823,7 @@ export class Room {
               floatingGalleryIncludeIds: this.settings.floatingGalleryIncludeIds,
               floatingGalleryExcludeIds: this.settings.floatingGalleryExcludeIds,
               floatingGalleryVoronoi: this.settings.floatingGalleryVoronoi || generateFloatingGalleryVoronoi(this.settings.floatingGallerySeed),
-              boardSize: this.settings.boardSize,
+              floatingWall: this.settings.floatingWall || null,              boardSize: this.settings.boardSize,
               tiledCanvasBackingStore: !!this.settings.tiledCanvasBackingStore
             }
           },
@@ -1028,6 +1032,7 @@ export class RoomManager {
       // Tear down sub-managers so their timers/intervals don't keep the
       // Room object alive after it's been dropped from the registry.
       room.sessionManager?.destroy?.();
+      room.floatingWall?.dispose?.();
       this.rooms.delete(id);
       console.log(`[RoomManager] Cleaned up empty room: ${id}`);
     }

@@ -22,6 +22,7 @@ import ChangelogOverlay from './ChangelogOverlay.svelte';
 import RanksDialog from './RanksDialog.svelte';
 
 import { appState, showProfile as showProfileFromState, toggleMessenger } from '../../state.svelte.js';
+import { isMobile } from '../../platform/mobile.js';
 import { applyRoomBoardSize } from '../../config/BoardSizes.js';
 import { messenger } from '../../messenger/messenger.svelte.js';
 import { isTauriDesktop, updateDiscordRichPresence } from '../../platform/desktop.js';
@@ -672,9 +673,13 @@ export function initSvelteUI(app) {
     const floatingArtEffect = $effect.root(() => {
       $effect(() => {
         const preferences = appState.appPreferences || app.appPreferences || {};
-        // lowPowerMode is tri-state ('auto'|'on'|'off') — a truthiness test here
-        // would read 'off' as enabled. Resolve it through the app.
-        const enabled = preferences.general?.showFloatingArt !== false && !app.isLowPowerModeActive?.();
+        const enabled = preferences.general?.showFloatingArt !== false;
+        // Low power and mobile run the wall in slow mode (1 Hz positions, local-only drags) instead
+        // of hiding it. lowPowerMode is tri-state ('auto'|'on'|'off'): an explicit 'off' opts a
+        // phone back into the full wall, so resolve it rather than testing truthiness.
+        const lowPowerPreference = preferences.general?.lowPowerMode ?? 'auto';
+        const slowMode = lowPowerPreference !== 'off' && lowPowerPreference !== false
+          && (!!app.isLowPowerModeActive?.() || isMobile());
         const connected = !!appState.connected;
         const roomId = appState.currentRoomId || null;
         const roomData = appState.currentRoomData || null;
@@ -684,14 +689,12 @@ export function initSvelteUI(app) {
         const floatingGalleryVoronoi = roomData?.floatingGalleryVoronoi || null;
         const boardWidth = app.board?.getWidth?.() || app.board?.dimensions?.[1] || 2000;
         const boardHeight = app.board?.getHeight?.() || app.board?.dimensions?.[0] || 2000;
+        // The server drives membership and layout (seed, include/exclude, hidden pieces) over the
+        // wall's own messages, so only what the component itself is built from forces a remount
         const floatingArtConfigKey = JSON.stringify({
-          floatingGallerySeed,
-          floatingGalleryIncludeIds,
-          floatingGalleryExcludeIds,
-          floatingGalleryVoronoiSeed: floatingGalleryVoronoi?.seed || 0,
-          floatingGalleryVoronoiVersion: floatingGalleryVoronoi?.version || 0,
           boardWidth,
-          boardHeight
+          boardHeight,
+          slowMode
         });
         const joinedRoom = connected && !!roomId && roomId !== '_discovery' && !app.isOfflineMode;
 
@@ -713,12 +716,73 @@ export function initSvelteUI(app) {
                   height: boardHeight
                 },
                 enabled: true,
+                slowMode,
+                // Cosmetic effects follow slow mode for now; a machine-power setting can drive this separately
+                showDetachFlights: !slowMode,
+                isCanvasFlipped: () => !!app.board?.canvasFlipped,
+                onAuthorClick: (username) => showProfileFromState(username),
                 floatingGallerySeed,
                 floatingGalleryIncludeIds,
                 floatingGalleryExcludeIds,
                 floatingGalleryVoronoi,
                 clientDeviceId: app.wsClient?.clientIdentity?.deviceId || '',
                 apiBaseUrl: import.meta.env.VITE_API_BASE_URL || '',
+                wsClient: app.wsClient,
+                toBoardPoint: (clientX, clientY) => {
+                  const board = app.board;
+                  const point = board?.getBoardRelativePos?.(clientX, clientY) || { x: 0, y: 0 };
+                  // #floatingArtMount is counter-flipped, so cards live in unflipped board space
+                  return board?.canvasFlipped ? { x: board.getWidth() - point.x, y: point.y } : point;
+                },
+                // Drag a works-in-progress piece back: claim it, float it as a paste at the drop
+                // point, and only take it off the shelf once that paste is committed
+                onWipPlace: async (item, x, y) => {
+                  const wsClient = app.wsClient;
+                  const claim = await wsClient?.requestFloatingWall?.({ a: 'wipClaim', id: item.id });
+                  if (!claim?.ok) {
+                    app.ui?.showToast(claim?.error || 'Could not take that piece', 3000, 'error');
+                    return false;
+                  }
+                  const release = () => wsClient.requestFloatingWall({ a: 'wipRelease', id: item.id });
+                  try {
+                    const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+                    const image = await new Promise((resolve, reject) => {
+                      const img = new Image();
+                      img.crossOrigin = 'anonymous';
+                      img.onload = () => resolve(img);
+                      img.onerror = () => reject(new Error('That piece failed to load'));
+                      img.src = `${apiBase}/api/wip/${item.id}`;
+                    });
+                    const loader = app.toolManager?.getTool?.('select');
+                    let selectTool = loader?.realTool || null;
+                    if (!selectTool && typeof loader?.loadRealTool === 'function') {
+                      selectTool = await loader.loadRealTool();
+                    }
+                    if (typeof selectTool?.placeImageAt !== 'function') throw new Error('Select tool failed to load');
+                    app.selectTool('select');
+                    const placed = selectTool.placeImageAt(image, x, y, {
+                      onCommit: async () => {
+                        const result = await wsClient.requestFloatingWall({ a: 'wipRestore', id: item.id });
+                        if (!result?.ok) {
+                          app.ui?.showToast(result?.error || 'Placed, but the shelf copy could not be removed', 4000, 'error');
+                        }
+                      },
+                      onDiscard: release
+                    });
+                    if (!placed) {
+                      release();
+                      return false;
+                    }
+                    app.ui?.showToast('Position it, then Apply to put it back on the board', 3000);
+                    return true;
+                  } catch (err) {
+                    release();
+                    app.ui?.showToast(err?.message || 'Could not place that piece', 3000, 'error');
+                    return false;
+                  }
+                },
+                onToast: (message, ms, type) => app.ui?.showToast?.(message, ms, type),
+                getBoardZoom: () => app.board?.zoom || 1,
                 onLike: async (itemOrId) => {
                   const id = typeof itemOrId === 'string' ? itemOrId : itemOrId?.id;
                   if (!id) {

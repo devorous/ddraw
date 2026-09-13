@@ -12,7 +12,7 @@ import fs from 'fs';
 import { connectDB, getDB, getMongoDatabase, updateUserMetrics, updateConsecutiveDays } from './db.js';
 import { getIpSalt, validateProductionConfig } from './config.js';
 import { metricsTracker } from './MetricsTracker.js';
-import { handleGalleryList, handleGalleryUpload, handleGalleryAnimationUpload, handleGalleryAnimationDelete, handleGalleryItem, handleGalleryLike, handleGalleryFavorite, handleGalleryFavorites, handleGalleryLiked, handleGalleryFavoriteCheck, handleGalleryCommentsList, handleGalleryCommentCreate, handleGalleryCommentUpdate, handleGalleryCommentDelete, handleGalleryDelete, handleGallerySidebar, handleGalleryTagsUpdate, handleFloatingArtList, setFloatingArtBroadcaster, setGalleryDiscordPoster } from './gallery.js';
+import { handleGalleryList, handleGalleryUpload, handleGalleryAnimationUpload, handleGalleryAnimationDelete, handleGalleryItem, handleGalleryLike, handleGalleryFavorite, handleGalleryFavorites, handleGalleryLiked, handleGalleryFavoriteCheck, handleGalleryCommentsList, handleGalleryCommentCreate, handleGalleryCommentUpdate, handleGalleryCommentDelete, handleGalleryDelete, handleGallerySidebar, handleGalleryTagsUpdate, handleFloatingArtList, setFloatingArtBroadcaster, setGalleryDiscordPoster, setGalleryWallListener, handleGalleryLikedIds, handleFloatingWallList, handleWallMeta } from './gallery.js';
 import { initDiscordBot, postGalleryItemToDiscord, setDiscordRoomManager } from './discordBot.js';
 import { postReleaseUpdateToDiscord } from './discordBot.js';
 import { handleAuthLogin, handleAuthRegister, handleAuthMe, handleAuthUsernameUpdate, handlePasswordResetRequest, handlePasswordResetComplete, handleEmailSet, handleEmailVerify, handleEmailDecline, handleDiscordConfig, handleDiscordOAuthStart, handleDiscordOAuthCallback, handleDiscordDdrawAccountLink } from './authRoutes.js';
@@ -58,6 +58,8 @@ import { getUsernameValidationMessage, isValidUsername, normalizeUsername } from
 import { normalizeBlendBakeMode } from '../shared/blendBakeMode.js';
 import { getIpSubnet, mergeHistory, normalizeIdentityPayload, recordConnectionEvent } from './identityTracking.js';
 import { generateFloatingGalleryVoronoi, getFloatingGalleryVoronoiJson } from './floatingVoronoi.js';
+import { FloatingWall } from './floatingWall.js';
+import { handleWipImage } from './wipArts.js';
 
 const WS_REJECT_LOG_VALUE_LIMIT = 512;
 const WS_REJECT_LOG_PAYLOAD_LIMIT = 2048;
@@ -751,6 +753,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (path === '/api/gallery/floating-wall' && req.method === 'GET') {
+    await handleFloatingWallList(req, res);
+    return;
+  }
+
+  if (path === '/api/gallery/wall-meta' && req.method === 'GET') {
+    await handleWallMeta(req, res);
+    return;
+  }
+
   if (path === '/api/gallery' && req.method === 'GET') {
     await handleGalleryList(req, res);
     return;
@@ -798,6 +810,17 @@ const server = createServer(async (req, res) => {
   // Favorites routes
   if (path === '/api/gallery/favorites' && req.method === 'GET') {
     await handleGalleryFavorites(req, res);
+    return;
+  }
+
+  const wipImageMatch = path.match(/^\/api\/wip\/([a-f0-9]{24})$/);
+  if (wipImageMatch && req.method === 'GET') {
+    await handleWipImage(req, res, wipImageMatch[1]);
+    return;
+  }
+
+  if (path === '/api/gallery/liked-ids' && req.method === 'GET') {
+    await handleGalleryLikedIds(req, res);
     return;
   }
 
@@ -1979,6 +2002,20 @@ async function init() {
     }
   });
 
+  // Floating art wall: heart counts and deletions reach every wall showing the piece
+  // (included ids can come from other rooms); uploads join the walls of their tagged rooms.
+  setGalleryWallListener({
+    likes: (id, likesCount) => {
+      for (const room of roomManager.rooms.values()) room.floatingWall?.onLikes(id, likesCount);
+    },
+    added: (tags, item) => {
+      for (const tag of tags || []) roomManager.rooms.get(tag)?.floatingWall?.onAdded(item);
+    },
+    removed: (id) => {
+      for (const room of roomManager.rooms.values()) room.floatingWall?.onRemoved(id);
+    }
+  });
+
   // Set up floating art broadcaster for gallery likes
   setFloatingArtBroadcaster((tags, item) => {
     // Broadcast to each room matching the image tags
@@ -2094,6 +2131,24 @@ function broadcastUsersForRoom(room) {
  * @param {WebSocket} ws - The WebSocket client.
  * @param {Object} payload - The message payload to send.
  */
+// Floating art wall traffic is ephemeral: encode once and send straight to the room's sockets,
+// bypassing broadcastToRoom's sequencing, stroke log and batching.
+const floatingWallIo = {
+  send: (ws, payload) => sendTo(ws, payload),
+  // The wall edited room settings (an admin hid a piece): everyone's copy must match
+  settingsChanged: (room) => createRoomBroadcaster(room)(buildSettingsPayload(room)),
+  // `filter` picks the recipients (wall subscribers, or only full/slow ones); encoded only if someone gets it
+  broadcast: (room, payload, filter = null) => {
+    if (!room?.clients?.size) return;
+    let buffer = null;
+    for (const client of room.clients) {
+      if (filter && !filter(client)) continue;
+      buffer ||= Msg.encode(Msg.create(payload)).finish().slice();
+      sendTo(client, buffer);
+    }
+  }
+};
+
 function sendTo(ws, payload) {
   if (ws.readyState === WebSocket.OPEN) {
     if (payload instanceof Uint8Array || Buffer.isBuffer(payload)) {
@@ -2303,8 +2358,7 @@ function buildSettingsPayload(room) {
     roomMaxUsers: room.settings.maxUsers,
     roomModInactiveImmune: room.settings.modInactiveImmune,
     roomJoinPolicy: room.settings.joinPolicy,
-    roomObscureRequiresRegistered: !!room.settings.obscureRequiresRegistered,
-    roomAutoMuteGuests: room.settings.autoMuteGuests,
+    roomObscureRequiresRegistered: !!room.settings.obscureRequiresRegistered,    roomAutoMuteGuests: room.settings.autoMuteGuests,
     roomAutoMuteVpnUsers: room.settings.autoMuteVpnUsers,
     roomHideChatNotifications: room.settings.hideChatNotifications,
     // Tri-state (0 unset / 1 on / 2 off), not a bool: proto3 omits `false`, so a
@@ -3854,6 +3908,11 @@ wss.on('connection', async (ws, req) => {
       }
 
       switch (data.t) {
+        case T.FLOATING_WALL:
+          if (ws.sessionIndex === undefined) break;
+          await FloatingWall.forRoom(room, floatingWallIo).handleMessage(ws, data);
+          break;
+
         case T.CONNECT: {
           await room.ensureLoaded();
           if (!hasValidRoomBoardSize(room)) {
@@ -5028,6 +5087,7 @@ wss.on('connection', async (ws, req) => {
             if (data.roomPrivate !== undefined) {
               room.settings.private = !!data.roomPrivate;
             }
+            let floatingWallReset = false;
             if (data.roomFloatingGallerySeed !== undefined) {
               const nextSeed = Number(data.roomFloatingGallerySeed);
               const previousSeed = room.settings.floatingGallerySeed;
@@ -5036,6 +5096,9 @@ wss.on('connection', async (ws, req) => {
                 : room.settings.floatingGallerySeed;
               if (room.settings.floatingGallerySeed !== previousSeed) {
                 room.settings.floatingGalleryVoronoi = generateFloatingGalleryVoronoi(room.settings.floatingGallerySeed);
+                // "Rearrange" in room settings: a new seed re-spawns the floating wall from scratch
+                floatingWallReset = true;
+                room.settings.floatingWall = null;
               }
             }
             if (data.roomFloatingGalleryIncludeIds !== undefined) {
@@ -5069,6 +5132,7 @@ wss.on('connection', async (ws, req) => {
               .filter(id => !room.settings.floatingGalleryExcludeIds.includes(id));
 
             await room.saveToDB();
+            room.floatingWall?.refresh({ resetLayout: floatingWallReset });
 
             if (autoMuteGuestsChanged || autoMuteVpnUsersChanged) {
               for (const client of room.clients) {

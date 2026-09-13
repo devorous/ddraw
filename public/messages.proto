@@ -128,6 +128,7 @@ message Msg {
     STAFF_MSG = 118;               // Staff-only chat message
     STAFF_CHAT_IMG = 119;          // Staff-only chat image
     FLOATING_ART_UPDATE = 120;     // Floating art (gallery image with 2+ likes)
+    FLOATING_WALL = 122;           // Floating art wall: server-driven positions and client grab/drag/drop (never relayed)
     BW_PROBE_START = 130;          // Server→client: start a bandwidth probe (returns N chunks)
     BW_PROBE_CHUNK = 131;          // Client→server: one probe chunk (random bytes)
     BW_REPORT = 132;               // Client→server: report a previously measured uploadBps (e.g. from _discovery)
@@ -469,6 +470,8 @@ message Msg {
   uint32 chat_cooldown_ms = 211;     // CHAT_WARNING: cooldown remaining before the sender may chat again (ms)
   uint32 chat_warning_level = 212;   // CHAT_WARNING: 1=first warning, 2=second warning, 3=auto-silenced
   string fa = 146;                   // Floating art (gallery item JSON) for FLOATING_ART_UPDATE
+  string floating_wall_json = 213;       // FLOATING_WALL: action/state JSON (see server/floatingWall.js)
+  repeated sint32 floating_wall_pos = 214; // FLOATING_WALL pos: [index, x, y, ...] board px, card centres
   uint32 room_floating_gallery_seed = 147; // ROOM_UPDATE/SETTINGS: shared floating gallery layout seed
   repeated string room_floating_gallery_include_ids = 148; // ROOM_UPDATE/SETTINGS: explicitly included gallery ids
   repeated string room_floating_gallery_exclude_ids = 149; // ROOM_UPDATE/SETTINGS: explicitly excluded gallery ids
