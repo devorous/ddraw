@@ -16,6 +16,11 @@
   touch-action: none;
 }
 
+#boardContainer.is-background-panning,
+#boardContainer.is-background-panning * {
+  cursor: grabbing !important;
+}
+
 #boardContainer.image-dragover::after {
   content: '';
   position: absolute;

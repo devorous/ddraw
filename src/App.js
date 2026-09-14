@@ -2079,7 +2079,7 @@ export class DrawingApp {
     elements.boardContainer.addEventListener('pointerdown', (e) => this.handleBoardContainerPointerDown(e));
     elements.boardContainer.addEventListener('pointermove', (e) => this.handleBoardContainerPointerMove(e));
     elements.boardContainer.addEventListener('pointerup', (e) => this.handleBoardContainerPointerUp(e));
-    elements.boardContainer.addEventListener('pointercancel', () => { this._containerPanActive = false; });
+    elements.boardContainer.addEventListener('pointercancel', () => this._endContainerPan());
     elements.boardContainer.addEventListener('wheel', (e) => this.handleBoardContainerWheel(e));
 
     // Touch gestures are now handled by Hammer.js in TouchHandler.init()
@@ -6643,6 +6643,13 @@ export class DrawingApp {
     // Only handle events on the boardContainer background itself (not bubbled from canvas/children)
     if (e.target !== this.ui.elements.boardContainer) return;
 
+    // A second finger landing mid-drag is the start of a pinch — hand the view
+    // over to TouchHandler instead of fighting it with a one-finger pan.
+    if (this._containerPanActive && e.pointerId !== this._containerPanPointerId) {
+      this._endContainerPan();
+      return;
+    }
+
     if (this.keyboardHandler?.handlePointerDown(e)) return;
 
     this._blurEmbeddedChatFocus();
@@ -6659,8 +6666,9 @@ export class DrawingApp {
           this.handlePointerDown(e);
           return;
         }
-        // Clicking on the background (not a handle) with an active selection: commit and deselect
-        selectTool.deselect();
+        // Background (not a handle) with an active selection: dragging pans,
+        // a tap commits and deselects on release.
+        this._startBackgroundPan(e, { deselectOnTap: true });
         return;
       }
     }
@@ -6681,6 +6689,7 @@ export class DrawingApp {
       }
 
       this._containerPanActive = true;
+      this._containerPanPointerId = e.pointerId;
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
@@ -6725,14 +6734,49 @@ export class DrawingApp {
       this.self.panning = true;
       this.self.mousedown = true;
       this._containerPanActive = true;
+      this._containerPanPointerId = e.pointerId;
       this._lastPanPointerX = e.clientX;
       this._lastPanPointerY = e.clientY;
       e.currentTarget.setPointerCapture(e.pointerId);
+      return;
     }
+
+    // Any other tool: dragging the empty area around the board pans the view.
+    // Nothing draws out here, so this needs no tool switch (useful on tablets).
+    this._startBackgroundPan(e);
+  }
+
+  /**
+   * Starts a view-only pan from the board background. Unlike the pan tool it
+   * leaves `self.panning`/`self.mousedown` alone, so the active tool never
+   * sees a stroke begin or end.
+   */
+  _startBackgroundPan(e, { deselectOnTap = false } = {}) {
+    e.preventDefault();
+    this._containerPanActive = true;
+    this._containerPanPointerId = e.pointerId;
+    this._containerPanStartX = e.clientX;
+    this._containerPanStartY = e.clientY;
+    this._containerPanDeselectOnTap = deselectOnTap;
+    this._lastPanPointerX = e.clientX;
+    this._lastPanPointerY = e.clientY;
+    this.ui.elements.boardContainer.classList.add('is-background-panning');
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+  }
+
+  _endContainerPan() {
+    this._containerPanActive = false;
+    this._containerPanPointerId = null;
+    this._containerPanDeselectOnTap = false;
+    this.ui.elements.boardContainer.classList.remove('is-background-panning');
   }
 
   handleBoardContainerPointerMove(e) {
     if (this.syncClient?.isCanvasInputBlocked()) return;
+    if (this._containerPanActive && this.touchHandler?.state.isPinching) {
+      this._endContainerPan();
+      return;
+    }
     // Update select tool cursor when hovering over handles in the gray area
     if (this.self.tool === 'select' && !this._containerPanActive) {
       const selectToolLoader = this.toolManager.tools.select;
@@ -6744,6 +6788,7 @@ export class DrawingApp {
     }
 
     if (!this._containerPanActive) return;
+    if (this._containerPanPointerId != null && e.pointerId !== this._containerPanPointerId) return;
     const dx = e.clientX - this._lastPanPointerX;
     const dy = e.clientY - this._lastPanPointerY;
     this.board.pan(dx, dy);
@@ -6755,7 +6800,13 @@ export class DrawingApp {
     if (this.syncClient?.isCanvasInputBlocked()) return;
     if (this.keyboardHandler?.handlePointerUp(e)) return;
     if (!this._containerPanActive) return;
-    this._containerPanActive = false;
+    if (this._containerPanPointerId != null && e.pointerId !== this._containerPanPointerId) return;
+
+    if (this._containerPanDeselectOnTap && e.button === 0) {
+      const moved = Math.hypot(e.clientX - this._containerPanStartX, e.clientY - this._containerPanStartY);
+      if (moved < 5) this.toolManager.tools.select?.realTool?.deselect();
+    }
+    this._endContainerPan();
 
     if (e.button === 1) {
       this.self.panning = false;

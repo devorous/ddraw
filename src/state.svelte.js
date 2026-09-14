@@ -61,7 +61,7 @@ class DrawingState {
   // UI
   boardMenuOpen = $state(null); // null | 'blend' | 'layers'
   profileDialog = $state({ visible: false, username: null, data: null, loading: false, error: null });
-  galleryItemDialog = $state({ visible: false, itemId: null });
+  galleryItemDialog = $state({ visible: false, itemId: null, focusComments: false });
   roomSettingsVisible = $state(false);
   appSettingsVisible = $state(false);
   appSettingsTab = $state('general');

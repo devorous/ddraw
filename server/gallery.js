@@ -1146,8 +1146,13 @@ export async function handleGalleryCommentsList(req, res, id) {
       .sort({ createdAt: 1 })
       .limit(100)
       .toArray();
+    // The list is capped, so callers showing a count need the real total
+    const total = comments.length < 100
+      ? comments.length
+      : await db.collection('comments').countDocuments({ galleryId: id });
 
     json(res, 200, {
+      total,
       comments: comments.map(c => ({
         id: c._id.toString(),
         author: c.author,
@@ -1632,12 +1637,26 @@ export async function handleWallMeta(req, res) {
     .slice(0, WALL_META_MAX_IDS);
   if (!ids.length) return json(res, 200, { items: [] });
   try {
-    const docs = await db.collection('gallery')
-      .find({ _id: { $in: ids.map(id => new ObjectId(id)) } }, {
-        projection: { url: 1, thumbUrl: 1, author: 1, authorId: 1, tagUsername: 1, title: 1, likesCount: 1, animatedUrl: 1 }
+    const [docs, commentCounts] = await Promise.all([
+      db.collection('gallery')
+        .find({ _id: { $in: ids.map(id => new ObjectId(id)) } }, {
+          projection: { url: 1, thumbUrl: 1, author: 1, authorId: 1, tagUsername: 1, title: 1, likesCount: 1, animatedUrl: 1 }
+        })
+        .toArray(),
+      db.collection('comments')
+        .aggregate([
+          { $match: { galleryId: { $in: ids.map(id => id.toLowerCase()) } } },
+          { $group: { _id: '$galleryId', n: { $sum: 1 } } }
+        ])
+        .toArray()
+    ]);
+    const commentsById = new Map(commentCounts.map(c => [c._id, c.n]));
+    json(res, 200, {
+      items: docs.map(doc => {
+        const { group, ...item } = toWallItem(doc);
+        return { ...item, commentsCount: commentsById.get(item.id) || 0 };
       })
-      .toArray();
-    json(res, 200, { items: docs.map(doc => toWallItem(doc)).map(({ group, ...item }) => item) });
+    });
   } catch (err) {
     console.error('[Gallery] Wall meta error:', err);
     json(res, 500, { error: 'Failed to fetch card details' });

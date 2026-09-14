@@ -316,7 +316,9 @@ export function initSvelteUI(app) {
       target: galleryItemDialogTarget,
       props: {
         apiBaseUrl: apiBase,
-        galleryBaseUrl: galleryBase
+        galleryBaseUrl: galleryBase,
+        // Keeps the floating wall's comment counts in step with the dialog
+        onCommentsCountChange: (id, count) => components.floatingArt?.setCommentsCount?.(id, count)
       }
     });
   }
@@ -806,10 +808,7 @@ export function initSvelteUI(app) {
                   return res.json().catch(() => ({}));
                 },
                 onComment: (id) => {
-                  // Open gallery in new tab focused on this image
-                  // In Tauri, relative URLs resolve to tauri://localhost — use absolute URL instead
-                  const galleryBase = isTauriDesktop() ? 'https://ddraw.ca/gallery' : '/gallery';
-                  window.open(`${galleryBase}/${encodeURIComponent(id)}`, '_blank');
+                  appState.galleryItemDialog = { visible: true, itemId: id, focusComments: true };
                 }
               }
             });

@@ -324,6 +324,7 @@
       hasProfile: !!entry.authorHasProfile,
       title: entry.title || '',
       likesCount: entry.likesCount || 0,
+      commentsCount: entry.commentsCount || 0,
       animatedUrl: entry.animatedUrl || null
     };
   }
@@ -817,6 +818,15 @@
     if (item?.id) setPieceLikes(item.id, item.likesCount);
   }
 
+  // The gallery item dialog reports counts as it loads, posts and deletes comments
+  export function setCommentsCount(id, commentsCount) {
+    if (!id || typeof commentsCount !== 'number') return;
+    const meta = metaCache.get(id);
+    if (meta) metaCache.set(id, { ...meta, commentsCount });
+    const piece = pieceById.get(id);
+    if (piece?.item) piece.item = { ...piece.item, commentsCount };
+  }
+
   $effect(() => {
     if (!enabled || !wsClient || !roomId) return;
     wsClient.on('floating_wall', handleWallMessage);
@@ -856,6 +866,7 @@
             y={piece.y - WALL_CARD_H / 2}
             liked={likedIds.has(piece.id)}
             likesCount={piece.item?.likesCount || 0}
+            commentsCount={piece.item?.commentsCount || 0}
             dragging={draggingId === piece.id}
             jump={piece.jump}
             slow={slowMode}

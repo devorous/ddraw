@@ -3,7 +3,7 @@
 
   /**
    * @type {{
-   *   item: any, x: number, y: number, liked?: boolean, likesCount?: number,
+   *   item: any, x: number, y: number, liked?: boolean, likesCount?: number, commentsCount?: number,
    *   dragging?: boolean, jump?: boolean, slow?: boolean,
    *   loaded?: boolean, onNeedMeta?: (id: string) => void,
    *   onLike?: (item: any) => Promise<void>, onComment?: (id: string) => void,
@@ -18,6 +18,7 @@
     y,
     liked = false,
     likesCount = 0,
+    commentsCount = 0,
     dragging = false,
     jump = false,
     slow = false,
@@ -39,6 +40,7 @@
   let imageSrc = $derived(item.thumbUrl || item.url || '');
   let showAuthorLink = $derived(!!item.hasProfile && !!item.author && !!onAuthorClick);
   let lastLikePointerActivationAt = 0;
+  let lastCommentPointerActivationAt = 0;
   let lastImagePointerActivationAt = 0;
   let lastAuthorPointerActivationAt = 0;
   let lastHidePointerActivationAt = 0;
@@ -56,9 +58,23 @@
   }
 
   function handleComment() {
-    if (onComment) {
-      onComment(item.id);
+    if (isClickSuppressed?.()) return;
+    onComment?.(item.id);
+  }
+
+  function handleCommentPointerUp(e) {
+    if (e.pointerType === 'mouse') return;
+    lastCommentPointerActivationAt = performance.now();
+    e.preventDefault();
+    handleComment();
+  }
+
+  function handleCommentClickEvent(e) {
+    if (performance.now() - lastCommentPointerActivationAt < POINTER_CLICK_SUPPRESS_MS) {
+      e.preventDefault();
+      return;
     }
+    handleComment();
   }
 
   function handleImageClick() {
@@ -201,6 +217,25 @@
         </svg>
         <span class="like-count">{likesCount}</span>
       </button>
+      {#if onComment}
+        <button
+          class="art-action-btn comment-btn"
+          onclick={handleCommentClickEvent}
+          onpointerup={handleCommentPointerUp}
+          title={commentsCount ? `${commentsCount} comment${commentsCount === 1 ? '' : 's'}` : 'Leave a comment'}
+          aria-label="Comments"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M2.5 3.5C2.5 2.95 2.95 2.5 3.5 2.5H12.5C13.05 2.5 13.5 2.95 13.5 3.5V10C13.5 10.55 13.05 11 12.5 11H6.5L3.5 13.5V11C2.95 11 2.5 10.55 2.5 10V3.5Z"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span class="like-count">{commentsCount}</span>
+        </button>
+      {/if}
       {#if showAuthorLink}
         <button
           class="art-author art-author-link"
@@ -342,7 +377,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 6px;
     padding: 8px 10px;
     background: var(--color-bg-secondary, #222);
   }
@@ -393,6 +428,7 @@
   }
 
   .art-author {
+    min-width: 0;
     font-size: 11px;
     color: var(--color-text-secondary, #aaa);
     font-weight: 500;

@@ -1,17 +1,49 @@
 <script>
   import { appState, showProfile } from '../../state.svelte.js';
 
-  let { apiBaseUrl = '', galleryBaseUrl = '/gallery', onClose = null } = $props();
+  // Matches the server's check for deleting someone else's comment
+  const DELETE_ANY_COMMENT_ROLE = 8;
+  const DELETE_CONFIRM_MS = 3000;
+
+  let { apiBaseUrl = '', galleryBaseUrl = '/gallery', onClose = null, onCommentsCountChange = null } = $props();
 
   let visible = $derived(appState.galleryItemDialog.visible);
   let itemId = $derived(appState.galleryItemDialog.itemId);
+  let focusComments = $derived(!!appState.galleryItemDialog.focusComments);
   let item = $state(null);
   let loading = $state(false);
   let error = $state(null);
   let liked = $state(false);
   let likesCount = $state(0);
 
-  async function fetchItem() {
+  let comments = $state([]);
+  let commentsTotal = $state(0);
+  let commentsLoading = $state(false);
+  let commentError = $state(null);
+  let newComment = $state('');
+  let commentSubmitting = $state(false);
+  let editingCommentId = $state(null);
+  let editingCommentText = $state('');
+  let commentActionBusy = $state(false);
+  let pendingDeleteId = $state(null);
+  let viewer = $state(null); // { userId, role } when signed in
+  let viewerChecked = $state(false);
+  let commentsSection = $state(null);
+  let commentInput = $state(null);
+  let deleteConfirmTimer = null;
+  let focusedForId = null;
+  // Bumped each time the dialog opens on a piece, so a slow response for the last one can't land on this one
+  let loadSeq = 0;
+
+  function readToken() {
+    try {
+      return localStorage.getItem('topDrawAuthToken');
+    } catch {
+      return null;
+    }
+  }
+
+  async function fetchItem(seq) {
     if (!itemId) return;
 
     loading = true;
@@ -20,7 +52,7 @@
 
     async function tryFetchJson(url) {
       try {
-        const token = localStorage.getItem('topDrawAuthToken');
+        const token = readToken();
         const res = await fetch(url, {
           headers: token ? { 'Authorization': `Bearer ${token}` } : {}
         });
@@ -37,6 +69,7 @@
       const data =
         (await tryFetchJson(`${apiBaseUrl}/api/gallery/${itemId}`)) ||
         (await tryFetchJson(`${apiBaseUrl}/api/gallery-item?id=${encodeURIComponent(itemId)}`));
+      if (seq !== loadSeq) return;
       if (!data) throw new Error('Failed to load image');
 
       item = data;
@@ -46,13 +79,58 @@
       console.error('[GalleryItemDialog] Fetch error:', err);
       error = err.message;
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
+    }
+  }
+
+  function setCommentsTotal(id, total) {
+    commentsTotal = Math.max(0, total);
+    onCommentsCountChange?.(id, commentsTotal);
+  }
+
+  async function fetchComments(id, seq) {
+    commentsLoading = true;
+    commentError = null;
+    comments = [];
+    commentsTotal = 0;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/gallery/${id}/comments`);
+      if (!res.ok) throw new Error('Could not load comments');
+      const data = await res.json();
+      if (seq !== loadSeq) return;
+      comments = Array.isArray(data.comments) ? data.comments : [];
+      setCommentsTotal(id, typeof data.total === 'number' ? data.total : comments.length);
+    } catch (err) {
+      if (seq === loadSeq) commentError = err.message || 'Could not load comments';
+    } finally {
+      if (seq === loadSeq) commentsLoading = false;
+    }
+  }
+
+  async function fetchViewer(seq) {
+    const token = readToken();
+    if (!token) {
+      viewer = null;
+      viewerChecked = true;
+      return;
+    }
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/auth/me`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = res.ok ? await res.json() : null;
+      if (seq !== loadSeq) return;
+      viewer = data?.success ? { userId: data.userId, role: data.role || 0 } : null;
+    } catch {
+      // Offline for a moment: keep whatever we knew
+    } finally {
+      if (seq === loadSeq) viewerChecked = true;
     }
   }
 
   async function handleLike() {
     if (!item) return;
-    const token = localStorage.getItem('topDrawAuthToken');
+    const token = readToken();
     if (!token) return;
 
     const prevLiked = liked;
@@ -80,11 +158,145 @@
     }
   }
 
+  async function submitComment() {
+    const text = newComment.trim();
+    const token = readToken();
+    if (!item || !text || commentSubmitting || !token) return;
+
+    const id = item.id;
+    commentSubmitting = true;
+    commentError = null;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/gallery/${id}/comments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not post comment');
+      if (item?.id !== id) return;
+      comments = [...comments, { ...data, edited: !!data.updatedAt }];
+      newComment = '';
+      setCommentsTotal(id, commentsTotal + 1);
+    } catch (err) {
+      if (item?.id === id) commentError = err.message || 'Could not post comment';
+    } finally {
+      commentSubmitting = false;
+    }
+  }
+
+  function canEditComment(comment) {
+    return !!viewer && viewer.userId === comment.authorId;
+  }
+
+  function canDeleteComment(comment) {
+    return !!viewer && (viewer.userId === comment.authorId || viewer.role >= DELETE_ANY_COMMENT_ROLE);
+  }
+
+  function beginCommentEdit(comment) {
+    editingCommentId = comment.id;
+    editingCommentText = comment.text;
+  }
+
+  function cancelCommentEdit() {
+    editingCommentId = null;
+    editingCommentText = '';
+  }
+
+  async function saveCommentEdit(commentId) {
+    const token = readToken();
+    const text = editingCommentText.trim();
+    const comment = comments.find((entry) => entry.id === commentId);
+    if (!token || !comment || !canEditComment(comment) || !text || commentActionBusy) return;
+
+    commentActionBusy = true;
+    commentError = null;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/gallery/comments/${commentId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not save comment');
+      comments = comments.map((entry) => entry.id === commentId ? {
+        ...entry,
+        text: data.text || text,
+        edited: true,
+        updatedAt: data.updatedAt || new Date().toISOString()
+      } : entry);
+      cancelCommentEdit();
+    } catch (err) {
+      commentError = err.message || 'Could not save comment';
+    } finally {
+      commentActionBusy = false;
+    }
+  }
+
+  // Two taps, like hiding a floating card: the first arms, the second deletes
+  async function deleteComment(commentId) {
+    const comment = comments.find((entry) => entry.id === commentId);
+    if (!comment || !canDeleteComment(comment) || commentActionBusy) return;
+
+    if (pendingDeleteId !== commentId) {
+      pendingDeleteId = commentId;
+      clearTimeout(deleteConfirmTimer);
+      deleteConfirmTimer = setTimeout(() => { pendingDeleteId = null; }, DELETE_CONFIRM_MS);
+      return;
+    }
+    clearTimeout(deleteConfirmTimer);
+    pendingDeleteId = null;
+
+    const token = readToken();
+    if (!token || !item) return;
+    const id = item.id;
+
+    commentActionBusy = true;
+    commentError = null;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/gallery/comments/${commentId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Could not delete comment');
+      }
+      if (item?.id !== id) return;
+      comments = comments.filter((entry) => entry.id !== commentId);
+      if (editingCommentId === commentId) cancelCommentEdit();
+      setCommentsTotal(id, commentsTotal - 1);
+    } catch (err) {
+      commentError = err.message || 'Could not delete comment';
+    } finally {
+      commentActionBusy = false;
+    }
+  }
+
+  function resetComments() {
+    comments = [];
+    commentsTotal = 0;
+    commentError = null;
+    newComment = '';
+    pendingDeleteId = null;
+    clearTimeout(deleteConfirmTimer);
+    cancelCommentEdit();
+  }
+
   function close() {
     appState.galleryItemDialog = {
       visible: false,
-      itemId: null
+      itemId: null,
+      focusComments: false
     };
+    resetComments();
+    focusedForId = null;
     if (onClose) onClose();
   }
 
@@ -95,9 +307,12 @@
   }
 
   function handleKeyDown(e) {
-    if (e.key === 'Escape') {
-      close();
+    if (e.key !== 'Escape') return;
+    if (editingCommentId) {
+      cancelCommentEdit();
+      return;
     }
+    close();
   }
 
   function formatDate(dateStr) {
@@ -112,8 +327,26 @@
   // Fetch item when dialog opens
   $effect(() => {
     if (visible && itemId) {
-      fetchItem();
+      const seq = ++loadSeq;
+      resetComments();
+      viewerChecked = false;
+      fetchItem(seq);
+      fetchComments(itemId, seq);
+      fetchViewer(seq);
     }
+  });
+
+  // Opened from a card's comment button: bring the comments into view once, and put the caret in
+  // the box on devices with a real pointer (on touch that would pop the keyboard over the art)
+  $effect(() => {
+    if (!visible || !focusComments || !item || !commentsSection || focusedForId === item.id) return;
+    const wantsCaret = typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
+    if (wantsCaret && !viewerChecked) return; // the comment box appears once we know who's signed in
+    focusedForId = item.id;
+    if (wantsCaret && commentInput) {
+      commentInput.focus({ preventScroll: true });
+    }
+    commentsSection.scrollIntoView({ block: 'nearest' });
   });
 </script>
 
@@ -194,6 +427,100 @@
                 </span>
               </div>
             </div>
+
+            <section class="comments" bind:this={commentsSection} aria-label="Comments">
+              <h3 class="comments-heading">
+                Comments
+                {#if commentsTotal}<span class="comments-total">{commentsTotal}</span>{/if}
+              </h3>
+
+              {#if commentsLoading}
+                <p class="comments-note">Loading comments...</p>
+              {:else if comments.length === 0}
+                <p class="comments-note">No comments yet</p>
+              {:else}
+                <ul class="comments-list">
+                  {#each comments as comment (comment.id)}
+                    <li class="comment">
+                      <div class="comment-header">
+                        <button
+                          type="button"
+                          class="comment-author"
+                          title={`View ${comment.author}'s profile`}
+                          onclick={() => showProfile(comment.author)}
+                        >{comment.author}</button>
+                        <span class="comment-date">{formatDate(comment.createdAt)}</span>
+                        {#if comment.edited}
+                          <span class="comment-edited">edited</span>
+                        {/if}
+                        <span class="comment-tools">
+                          {#if canEditComment(comment) && editingCommentId !== comment.id}
+                            <button
+                              type="button"
+                              class="comment-action"
+                              onclick={() => beginCommentEdit(comment)}
+                              disabled={commentActionBusy}
+                            >Edit</button>
+                          {/if}
+                          {#if canDeleteComment(comment)}
+                            <button
+                              type="button"
+                              class="comment-action comment-delete"
+                              class:confirm={pendingDeleteId === comment.id}
+                              onclick={() => deleteComment(comment.id)}
+                              disabled={commentActionBusy}
+                              title={pendingDeleteId === comment.id ? 'Click again to delete' : 'Delete comment'}
+                              aria-label="Delete comment"
+                            >{pendingDeleteId === comment.id ? 'Delete?' : '×'}</button>
+                          {/if}
+                        </span>
+                      </div>
+                      {#if editingCommentId === comment.id}
+                        <form class="comment-form" onsubmit={(e) => { e.preventDefault(); saveCommentEdit(comment.id); }}>
+                          <input
+                            type="text"
+                            bind:value={editingCommentText}
+                            maxlength="500"
+                            readonly={commentActionBusy}
+                            aria-label="Edit comment"
+                          />
+                          <button type="submit" class="comment-submit" disabled={!editingCommentText.trim() || commentActionBusy}>Save</button>
+                          <button type="button" class="comment-action" onclick={cancelCommentEdit} disabled={commentActionBusy}>Cancel</button>
+                        </form>
+                      {:else}
+                        <p class="comment-text">{comment.text}</p>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+                {#if commentsTotal > comments.length}
+                  <p class="comments-note">Showing the first {comments.length} of {commentsTotal}</p>
+                {/if}
+              {/if}
+
+              {#if viewer}
+                <form class="comment-form" onsubmit={(e) => { e.preventDefault(); submitComment(); }}>
+                  <input
+                    bind:this={commentInput}
+                    type="text"
+                    bind:value={newComment}
+                    placeholder="Add a comment..."
+                    maxlength="500"
+                    readonly={commentSubmitting}
+                    aria-label="Add a comment"
+                  />
+                  <button type="submit" class="comment-submit" disabled={!newComment.trim() || commentSubmitting}>
+                    {commentSubmitting ? '...' : 'Post'}
+                  </button>
+                </form>
+              {:else if !commentsLoading}
+                <p class="comments-note">Log in to leave a comment</p>
+              {/if}
+
+              {#if commentError}
+                <p class="comment-error" role="alert">{commentError}</p>
+              {/if}
+            </section>
 
             <div class="footer">
               <a href="{galleryBaseUrl}/{encodeURIComponent(item.id)}" target="_blank" class="view-full-btn">
@@ -407,6 +734,187 @@
     gap: 6px;
   }
 
+  .comments {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 16px;
+    border-top: 1px solid var(--color-border, #333);
+  }
+
+  .comments-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-text-primary, #f0f2f5);
+  }
+
+  .comments-total {
+    padding: 1px 7px;
+    border-radius: 10px;
+    background: var(--color-bg-tertiary, #0a0c0f);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-text-secondary, #aaa);
+  }
+
+  .comments-note {
+    margin: 0;
+    font-size: 13px;
+    color: var(--color-text-secondary, #aaa);
+  }
+
+  .comments-list {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .comment {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--color-border, #333);
+  }
+
+  .comment:last-child {
+    border-bottom: none;
+  }
+
+  .comment-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--color-text-secondary, #aaa);
+  }
+
+  .comment-author {
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    font-weight: 700;
+    color: var(--color-accent, #00d4aa);
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .comment-author:hover,
+  .comment-author:focus-visible {
+    text-decoration: underline;
+  }
+
+  .comment-date,
+  .comment-edited {
+    flex-shrink: 0;
+  }
+
+  .comment-edited {
+    font-style: italic;
+  }
+
+  .comment-tools {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .comment-action {
+    padding: 2px 6px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    font: inherit;
+    font-size: 12px;
+    color: var(--color-text-secondary, #aaa);
+    cursor: pointer;
+  }
+
+  .comment-action:hover:not(:disabled) {
+    background: var(--color-bg-hover, #2a2d35);
+    color: var(--color-text-primary, #f0f2f5);
+  }
+
+  .comment-delete {
+    font-size: 15px;
+    line-height: 1;
+  }
+
+  .comment-delete:hover:not(:disabled),
+  .comment-delete.confirm {
+    background: #b3261e;
+    color: #fff;
+    font-size: 12px;
+  }
+
+  .comment-action:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .comment-text {
+    margin: 4px 0 0;
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--color-text-primary, #f0f2f5);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .comment-form {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .comment-form input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border, #333);
+    border-radius: 6px;
+    background: var(--color-bg-primary, #1a1d23);
+    color: var(--color-text-primary, #f0f2f5);
+    font: inherit;
+    font-size: 14px;
+  }
+
+  .comment-form input:focus {
+    outline: none;
+    border-color: var(--color-accent, #00d4aa);
+  }
+
+  .comment-submit {
+    padding: 8px 12px;
+    border: none;
+    border-radius: 6px;
+    background: var(--color-accent, #00d4aa);
+    color: var(--color-bg-primary, #1a1d23);
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .comment-submit:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .comment-error {
+    margin: 0;
+    font-size: 13px;
+    color: #ff6b6b;
+  }
+
   .footer {
     margin-top: auto;
     padding-top: 16px;
@@ -432,6 +940,8 @@
   @media (max-width: 800px) {
     .dialog-content {
       flex-direction: column;
+      /* Stacked, the comments sit under the art: scroll the whole dialog to reach them */
+      overflow-y: auto;
     }
 
     .image-container {
@@ -439,8 +949,13 @@
       max-width: 100%;
     }
 
+    .image-container img {
+      max-height: 50vh;
+    }
+
     .info-panel {
       width: 100%;
+      overflow-y: visible;
     }
   }
 </style>
