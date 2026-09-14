@@ -2788,7 +2788,7 @@
           </section>
         {:else if activeView === 'dm' && recipient}
           <section class="conversation-view">
-            <div class="message-stream dm-stream" bind:this={dmMessagesEl} onscroll={(event) => handleMessageScroll('dm', event)} onwheel={markUserScrollActive} ontouchmove={markUserScrollActive}>
+            <div class="message-stream dm-stream" role="presentation" bind:this={dmMessagesEl} onscroll={(event) => handleMessageScroll('dm', event)} onwheel={markUserScrollActive} ontouchmove={markUserScrollActive}>
               {#if activeDMMessages.length === 0}
                 <div class="message-empty">This thread is empty. Say hi.</div>
               {:else}
@@ -2805,7 +2805,7 @@
           </section>
         {:else if activeView === 'staff'}
           <section class="conversation-view">
-            <div class="message-stream" bind:this={publicMessagesEl} onscroll={(event) => handleMessageScroll('staff', event)} onwheel={markUserScrollActive} ontouchmove={markUserScrollActive}>
+            <div class="message-stream" role="presentation" bind:this={publicMessagesEl} onscroll={(event) => handleMessageScroll('staff', event)} onwheel={markUserScrollActive} ontouchmove={markUserScrollActive}>
               {#if messages.staff.length > 0}
                 {#each groupedStaffMessages as msg (msg.id)}
                   {@render channelRow(msg, true)}
@@ -2815,7 +2815,7 @@
           </section>
         {:else}
           <section class="conversation-view">
-            <div class="message-stream" bind:this={publicMessagesEl} onscroll={(event) => handleMessageScroll('all', event)} onwheel={markUserScrollActive} ontouchmove={markUserScrollActive}>
+            <div class="message-stream" role="presentation" bind:this={publicMessagesEl} onscroll={(event) => handleMessageScroll('all', event)} onwheel={markUserScrollActive} ontouchmove={markUserScrollActive}>
               {#if messages.all.length === 0}
                 <div class="message-empty"></div>
               {:else}
@@ -3455,11 +3455,6 @@
 
   .chat-shell.mini .directory-header h3 {
     font-size: 0.72rem !important;
-  }
-
-  .chat-shell.mini .directory-header p {
-    font-size: 0.58rem !important;
-    margin-top: 0.1rem;
   }
 
   .chat-shell.mini .directory-list {
@@ -4752,13 +4747,6 @@
     margin: 0;
     font-size: 0.95rem;
     font-weight: 800;
-  }
-
-  .directory-header p {
-    display: block;
-    margin: 0.18rem 0 0;
-    color: var(--chat-muted);
-    font-size: 0.76rem;
   }
 
   .message-stream,

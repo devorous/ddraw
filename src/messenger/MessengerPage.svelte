@@ -326,8 +326,8 @@
 </div>
 
 {#if showAuthModal}
-  <div class="modal-overlay" onclick={closeAuthModal}>
-    <div class="modal" onclick={(e) => e.stopPropagation()}>
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) closeAuthModal(); }}>
+    <div class="modal" role="dialog" aria-modal="true" aria-label={authMode === 'login' ? 'Sign In' : 'Create Account'}>
       <div class="modal-header">
         <h2>{authMode === 'login' ? 'Sign In' : 'Create Account'}</h2>
         <button class="close-btn" onclick={closeAuthModal}>&times;</button>

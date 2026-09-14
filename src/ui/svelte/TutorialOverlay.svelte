@@ -484,7 +484,7 @@
   let toastAutoBottom = $state(null);
   let toastAutoMaxHeight = $state(null);
   let dragState = null;
-  let toastEl;
+  let toastEl = $state(null);
   let rafId = null;
   let mutationObserver = null;
   let preparedStep = null;

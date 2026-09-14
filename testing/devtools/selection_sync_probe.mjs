@@ -33,7 +33,7 @@
  */
 import puppeteer from 'puppeteer';
 import fs from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   captureLayerSnapshotsInPage, diffSnapshots, generateDiffPngInPage, PIXEL_TOLERANCE,
 } from '../lib/layerDiff.mjs';
@@ -47,7 +47,7 @@ const CHECKPOINT_MODE = process.argv.includes('--checkpoint');
 const ONLY = (process.argv.find((a) => a.startsWith('--only=')) || '').slice(7).split(',').filter(Boolean);
 const ROOM = `selsync_${Math.random().toString(36).slice(2, 10)}`;
 
-const ROOT = 'C:/Users/Kyle/Documents/git/top-draw';
+const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const { T } = await import(pathToFileURL(`${ROOT}/shared/MessageTypes.js`).href);
 const NAMES = {};
 for (const [k, v] of Object.entries(T)) if (typeof v === 'number') NAMES[v] = k;

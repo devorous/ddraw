@@ -1,7 +1,8 @@
 import puppeteer from 'puppeteer-core';
+import { fileURLToPath } from 'node:url';
 
 const CDP = 'http://127.0.0.1:9222';
-const OUT = process.argv[2] || 'C:/Users/Kyle/Documents/git/top-draw/testing/devtools/_eraser_trace.json';
+const OUT = process.argv[2] || fileURLToPath(new URL('./_eraser_trace.json', import.meta.url));
 const DURATION_MS = Number(process.argv[3] || 80000);
 
 const browser = await puppeteer.connect({ browserURL: CDP, defaultViewport: null });

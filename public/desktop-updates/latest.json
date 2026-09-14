@@ -1,11 +1,11 @@
 {
-  "version": "1.15.2-beta",
-  "notes": "New chat silence feature, mod message deletion, and various sync/rendering fixes.",
-  "pub_date": "2026-09-09T16:53:45.412Z",
+  "version": "1.16.0-beta",
+  "notes": "Floating gallery overhaul with a works-in-progress shelf and comments, pressure-controlled opacity, and fixes for logging out and restoring layers from history.",
+  "pub_date": "2026-09-14T15:26:26.892Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://www.ddraw.ca/desktop-updates/windows-x86_64/Ddraw_1.15.2-beta_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSQ01XR1piUDlNenRrQjlDa2R4RTNXRjBjSzhqV1VZUWtuOTE4L3JjN2xTOVB3MU9IMnF6US9ENVZ6M2tWYkU3aGwrVk1SVmpjU1VONlRZSWc0R0lvbWJtRDh4U2cyeWdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTcyOTM4CWZpbGU6RGRyYXdfMS4xNS4yLWJldGFfeDY0LXNldHVwLmV4ZQpKcEQyajJoWjdzM0dVenVZV0NVQXR4TTJiVEd3dUs2UE53V0pMVlcyR2tOYklMd2drK2dLa0dOQjRZRFVPSzlHcTl4UmkxTXplVzU3emRBSGxNdEdBUT09Cg=="
+      "url": "https://www.ddraw.ca/desktop-updates/windows-x86_64/Ddraw_1.16.0-beta_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSQ01XR1piUDlNemhZZTVpanlRS05jM1E4T09QOFBEYmV3Zmp5aW84cU1mYnBJTllKQmhzRnVJZmF1N1JvbVY2YUphU1NhRFNBbWJsZThxdDZ0SmZHYU4vWE5LZUhlN3c4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NDAwNjc5CWZpbGU6RGRyYXdfMS4xNi4wLWJldGFfeDY0LXNldHVwLmV4ZQo5K1BmQldsSC9jM2lHUU84cFd2ZGozdWY0Yy9hZGV6TU9TcGhva2hNTE1WRUNNVVJRTGxIdUV6WFlNd3E4WHRtcDkrYzl4Y0cwNFRnRnp6cTVLSERCUT09Cg=="
     }
   }
 }

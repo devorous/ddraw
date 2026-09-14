@@ -95,7 +95,7 @@
 
 {#if visible}
   <div class="changelogLayer" role="presentation">
-    <div class="changelogBackdrop" onclick={close}></div>
+    <div class="changelogBackdrop" role="presentation" onclick={close}></div>
     <div class="changelogModal" role="dialog" aria-modal="true" aria-labelledby="changelogTitle">
       <div class="changelogHead">
         <svg class="changelogBrush" viewBox="0 0 24 24" fill="none" aria-hidden="true">

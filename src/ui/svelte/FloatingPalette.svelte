@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte';
   import {
     appState,
     addColorToFloatingPalette,
@@ -76,7 +77,7 @@
     playGenieOut(panel, getGenieTarget(), applyHide);
   }
 
-  let wasVisible = visible;
+  let wasVisible = untrack(() => visible);
   $effect(() => {
     if (visible && !wasVisible) {
       playGenieIn(panel, getGenieTarget());
