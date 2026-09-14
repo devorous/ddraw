@@ -2,6 +2,6 @@
   "latest": "1.16.0-beta",
   "minRequired": "1.16.0-beta",
   "releaseDate": "2026-09-14T15:26:26.892Z",
-  "notes": "Floating gallery overhaul with a works-in-progress shelf and comments, pressure-controlled opacity, and fixes for logging out and restoring layers from history.",
+  "notes": "Overhauled the floating gallery around the board and implemented a WIP shelf where users can store unfinished art. Added a pressure-controlled opacity option for brushes.",
   "downloadUrl": "https://www.ddraw.ca/"
 }
