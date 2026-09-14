@@ -4543,7 +4543,7 @@ export class SelectTool extends Tool {
 
     const dataUrl = canvas.toDataURL('image/png');
     this.hideContextMenu();
-    app.ui?.showToast('Detaching…', 1500);
+    app.ui?.showToast('Storing WIP…', 1500);
     const result = await app.wsClient.requestFloatingWall({
       a: 'detach',
       owner: ownerSession,
@@ -4555,7 +4555,7 @@ export class SelectTool extends Tool {
     });
 
     if (!result?.ok) {
-      app.ui?.showToast(result?.error || 'Detach failed', 3500, 'error');
+      app.ui?.showToast(result?.error || 'Store WIP failed', 3500, 'error');
       if (this.selection === selection) this.showContextMenu();
       return false;
     }
@@ -4603,7 +4603,7 @@ export class SelectTool extends Tool {
       });
 
       const title = document.createElement('div');
-      title.textContent = 'Detach for…';
+      title.textContent = 'Store WIP for…';
       Object.assign(title.style, { padding: '6px 10px', fontSize: '12px', opacity: '0.7' });
       picker.appendChild(title);
 

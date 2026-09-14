@@ -1,7 +1,23 @@
 /** @fileoverview Curated changelog data for the "What's New" popup, generated from git history. */
 
 export const CHANGELOG = [
-  {v:'v1.15.2-beta', date:'2026-09-09', current:true, items:[
+  {v:'v1.16.0-beta', date:'2026-09-14', current:true, items:[
+    ['added', 'Overhauled the floating gallery around the board - pieces now arrange themselves by hearts and artist, and can be dragged and thrown around without affecting other users'],
+    ['added', 'Implemented a works-in-progress shelf - registered users can detach art from the board onto a shelf beneath it and place it back later'],
+    ['added', 'Implemented commenting on the floating gallery'],
+    ['added', 'Implemented opacity changing with pressure for the fluid brush by default - toggleable for all brushes'],
+    ['improved', 'Brush modes (Ink, Classic, Fluid and Pixel) are now grouped in the toolbar instead of the tool options'],
+    ['fixed', 'Fixed an issue with logging out not applying properly without leaving a room, and added a "Change name" option to the user menu'],
+    ['fixed', 'Fixed an issue where restoring the board from the history tab would merge all layers into one'],
+    ['fixed', 'Fixed an issue with the replay not being downloadable from the history tab'],
+  ], more:[
+    ['added', 'Added a button to save a mirror region as an image'],
+    ['added', 'Moderators can now hide pieces from the floating gallery, and unhide them from the room settings'],
+    ['improved', 'Improved detection of low power machines, and low power mode now disables background blur effects'],
+    ['fixed', 'Fixed an issue with cursors appearing over the canvas when a user switches tools via the toolbar'],
+    ['fixed', 'Fixed some issues with the gallery UI and rendering'],
+  ], moreTotal:5},
+  {v:'v1.15.2-beta', date:'2026-09-09', items:[
     ['added', 'Implemented user profile pages at ddraw.ca/user/<username>'],
     ['added', 'Implemented timelapse view in the user gallery'],
     ['improved', 'Offline rooms now have access to room settings and a few other features'],
