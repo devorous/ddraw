@@ -784,6 +784,18 @@ export class Auth {
     this.clearToken();
     this.clearStoredUsername();
     this.setRememberMe(false);
+    this.currentAuthSession = null;
+    // Drop any token login still on the wire, and ignore its result if it
+    // lands anyway — otherwise it would store the token again and undo this.
+    this._autoLoginInFlight = false;
+    this._autoLoginToken = null;
+    this._autoLoginSent = false;
+    this._autoLoginSocket = null;
+    this._ignoreAuthSuccess = true;
+    this.setAuthPending(false);
+    // The server may still be holding this tab's account session for a
+    // resume; a fresh key makes the next join start a new guest session.
+    this.wsClient?.rotateResumeKey?.();
     void this.showNotLoggedInState();
   }
 
@@ -807,6 +819,7 @@ export class Auth {
 
     // Store username for display after login success
     this._pendingUsername = username;
+    this._ignoreAuthSuccess = false;
 
     this.setLoading(true);
     await this.wsClient.sendAuthLogin(username, password);
@@ -1481,6 +1494,7 @@ export class Auth {
 
     this._pendingUsername = username;
     this._pendingRegister = true;
+    this._ignoreAuthSuccess = false;
     this.setLoading(true);
     await this.wsClient.sendAuthRegister(username, password, { email, secretQuestion, secretAnswer });
   }
@@ -1489,6 +1503,7 @@ export class Auth {
     const token = this.getStoredToken();
     if (!token) return false;
 
+    this._ignoreAuthSuccess = false;
     this.setAuthPending(true);
 
     if (this._autoLoginInFlight && this._autoLoginToken === token) {
@@ -1546,6 +1561,13 @@ export class Auth {
       this._authPendingTimeout = null;
     }
     this.setAuthPending(false);
+
+    if (data.success && this._ignoreAuthSuccess) {
+      // A login that was already in flight when the user logged out.
+      this._pendingUsername = null;
+      this._pendingRegister = false;
+      return;
+    }
 
     if (data.success) {
       const username = data.username || this._pendingUsername;

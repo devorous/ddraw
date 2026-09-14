@@ -595,6 +595,7 @@ export class WebSocketClient {
       4002, // Kicked
       4003, // Room full
       4009, // Version mismatch
+      4010, // Client left deliberately
       4401, // Unauthorized
       4408  // Rate limit exceeded
     ]);
@@ -3218,8 +3219,20 @@ export class WebSocketClient {
     this._cancelled = true;
     this._clearReconnectTimer();
     if (this.socket) {
-      this.socket.close();
+      // 4010 tells the server this was a deliberate leave, so it drops the
+      // session now instead of holding it open for a resume.
+      this.socket.close(4010, 'client-leave');
     }
+  }
+
+  /**
+   * Start a new resume identity. Call when the account behind this tab
+   * changes (logout, guest switch) so a later CONNECT can't reattach to a
+   * session the server is still holding for the previous identity.
+   * @returns {void}
+   */
+  rotateResumeKey() {
+    this.resumeKey = this._generateResumeKey();
   }
 }
 

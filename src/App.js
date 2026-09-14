@@ -25,6 +25,7 @@ import { douglasPeucker, distanceBasedCulling } from './utils/drawing.js';
 import { bindPressAction } from './utils/buttonBinding.js';
 import { Moderation } from './auth/Moderation.js';
 import { setActiveAuthTab } from './auth/authTabs.js';
+import { openChangeNameDialog } from './ui/ChangeNameDialog.js';
 import { ColorInputMenu } from './ui/ColorInputMenu.js';
 import { ColorController } from './ui/ColorController.js';
 import { MobileLayoutController } from './ui/MobileLayoutController.js';
@@ -716,6 +717,15 @@ export class DrawingApp {
     if (this.auth) {
       this.auth.onSuccess = (token, role, username, globalRole, roomRole, hasDiscord) => this.handleAuthSuccess(token, role, username, globalRole, roomRole, hasDiscord);
       this.auth.onError = (error) => this.handleAuthError(error);
+      this.auth.onLoggedInStateChange = (loggedIn) => {
+        if (loggedIn) return;
+        // Account details only arrive on login and USERS never clears them,
+        // so a guest session would otherwise keep the old account's name/badge.
+        this.self.registeredName = '';
+        this.self.hasDiscord = false;
+        this.self.selectedBadge = '';
+        this.self.isSupporter = false;
+      };
       this.auth.replayAuthSession?.();
     }
 
@@ -3671,6 +3681,21 @@ export class DrawingApp {
       };
     }
 
+    const changeNameBtn = document.getElementById('selfChangeNameBtn');
+    if (changeNameBtn) {
+      changeNameBtn.style.display = this.isOfflineMode ? 'none' : '';
+      changeNameBtn.onclick = () => {
+        menu.style.display = 'none';
+        openChangeNameDialog({
+          currentName: this.self.username || '',
+          isLoggedIn: !!this.auth?.isLoggedIn,
+          accountName: this.auth?.loggedInUsername || '',
+          onGuest: (name) => void this.changeNameAsGuest(name),
+          onSignIn: () => this.openLoginFromRoom()
+        });
+      };
+    }
+
     // Guests get a way into the login form without leaving the room.
     const loginBtn = document.getElementById('selfLoginBtn');
     if (loginBtn) {
@@ -3795,6 +3820,33 @@ export class DrawingApp {
     if (!this.landingPage) return;
     this.landingPage.show({ inRoom: true, login: true });
     setActiveAuthTab('signin', { focus: true });
+  }
+
+  /**
+   * Renames this user as a guest. A guest renames in place; a signed-in user
+   * is signed out and rejoins the current room, since the server socket stays
+   * authenticated to the account until it reconnects.
+   * @param {string} name
+   */
+  async changeNameAsGuest(name) {
+    const nextName = String(name || '').trim().slice(0, 20);
+    if (!nextName || !this.currentRoomId || this.isOfflineMode) return;
+
+    // Future joins from the landing page use this name too.
+    if (this.ui.elements.loginUsername) this.ui.elements.loginUsername.value = nextName;
+
+    if (!this.auth?.isLoggedIn) {
+      if (nextName === this.self.username) return;
+      // The server makes the name unique and echoes it back in USERS.
+      this.self.setUsername(nextName);
+      this.ui.updateSelfName(nextName);
+      this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastNameChange(nextName));
+      return;
+    }
+
+    this.auth.logout();
+    this.self.setUsername(nextName);
+    await this.handleRoomSelected(this.currentRoomId, this.currentRoomPassword);
   }
 
   /**

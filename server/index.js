@@ -6257,7 +6257,8 @@ wss.on('connection', async (ws, req) => {
     // generates a per-tab resumeKey and replays it on CONNECT; if it lands
     // within the grace window the user keeps their sessionIndex and peers
     // can see them reappear without allocating a new slot.
-    const INTENTIONAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4009, 4401, 4408]);
+    // 4010 = the client left the room on purpose (App.disconnect).
+    const INTENTIONAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4009, 4010, 4401, 4408]);
     const isIntentionalClose = INTENTIONAL_CLOSE_CODES.has(Number(code));
     // A kicked socket that had to be terminated closes as 1006, not 4002, so the
     // code alone would read as an accidental drop and hold the slot open for a
