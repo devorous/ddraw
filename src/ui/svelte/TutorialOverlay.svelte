@@ -26,7 +26,7 @@
       section: 'Basic Tutorial',
       title: 'Brush Modes',
       target: '#brushGroup',
-      text: 'Ink tapers like a calligraphy pen. Fluid lays down a smooth, painterly line that won\'t double-darken where it overlaps itself. Pixel stamps hard-edged squares for pixel art. Classic is the plain original brush with no extra shaping.',
+      text: 'Ink tapers like a calligraphy pen. Fluid Brush lays down a smooth, painterly line that won\'t double-darken where it overlaps itself. Pixel stamps hard-edged squares for pixel art. Classic is the plain original brush with no extra shaping.',
       beforeEnter: () => window.app?.selectTool?.('ink')
     },
     {

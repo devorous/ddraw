@@ -11,6 +11,7 @@ import {
   prepareStrokePreviewCanvas
 } from '../ui/StrokePreviewRenderer.js';
 import { Tool } from './BaseTool.js';
+import { pressureSizeFactor } from '../../shared/pressureTargets.js';
 
 /**
  * Brush tool for drawing smooth, pressure-sensitive lines.
@@ -187,7 +188,7 @@ export class BrushTool extends Tool {
     const hardness = user.hardness !== undefined ? user.hardness : 100;
     const hardnessFloat = hardness / 100.0;
 
-    const radius = user.pressure * user.size;
+    const radius = pressureSizeFactor(user) * user.size;
     const blurAmount = hardness < 100 ? (1 - hardnessFloat) * (20 + user.size * 0.2) : 0;
     const safetyMargin = radius * 0.5;
     const totalRadius = radius + blurExtent(blurAmount) + safetyMargin + 15;
@@ -214,8 +215,8 @@ export class BrushTool extends Tool {
     this.board.clearTop();
     this.board.topCtx.beginPath();
 
-    const oldRadius = user.pressure * user.size;
-    const newRadius = (newPressure ?? user.pressure) * (newSize ?? user.size);
+    const oldRadius = pressureSizeFactor(user) * user.size;
+    const newRadius = pressureSizeFactor(user, newPressure ?? user.pressure) * (newSize ?? user.size);
 
     const layerCtx = this.board.getActiveLayerContext();
     drawLineArray(user.currentLine, layerCtx, user);
@@ -283,7 +284,7 @@ export class BrushTool extends Tool {
   _boundsToPreviewRect(user, minX, minY, maxX, maxY) {
     const hardness = user.hardness !== undefined ? user.hardness : 100;
     const hardnessFloat = hardness / 100.0;
-    const radius = (user.pressure ?? 1) * user.size;
+    const radius = pressureSizeFactor(user) * user.size;
     const blurAmount = hardness < 100 ? (1 - hardnessFloat) * (20 + user.size * 0.2) : 0;
     const margin = radius + blurExtent(blurAmount) + radius * 0.5 + 15;
     return {

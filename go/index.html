@@ -973,8 +973,8 @@
               <a class="tool btn" id="classicBrushBtn" title="Classic Brush">
                 <img src="/images/classic-brush-icon.svg" alt="Classic Brush">
               </a>
-              <a class="tool btn" id="penBtn" title="Fluid">
-                <img src="/images/fluid-brush-icon.svg" alt="Fluid">
+              <a class="tool btn" id="penBtn" title="Fluid Brush">
+                <img src="/images/fluid-brush-icon.svg" alt="Fluid Brush">
               </a>
               <a class="tool btn" id="pixelBrushBtn" title="Pixel Brush">
                 <img src="/images/pixel-brush-icon.svg" alt="Pixel Brush">
@@ -1115,6 +1115,11 @@
                   <div class="dual-slider" id="pressureDualSlider">
                     <input autocomplete="off" type="range" min="0" max="100" value="0" class="slider pressureMin" id="pressureMinSlider" aria-label="Minimum pressure">
                     <input autocomplete="off" type="range" min="0" max="100" value="100" class="slider pressureMax" id="pressureMaxSlider" aria-label="Maximum pressure">
+                  </div>
+                  <div class="pressureTargets" id="pressureTargets" role="group" aria-label="Pressure affects">
+                    <label class="pressureToggle" title="Pressure changes size"><input type="checkbox" data-pressure-target="size" checked><span>Size</span></label>
+                    <label class="pressureToggle" title="Pressure changes opacity"><input type="checkbox" data-pressure-target="opacity"><span>Opacity</span></label>
+                    <button class="lock-btn" id="pressureTargetsLock" title="Lock pressure targets for current tool"><img src="/images/lock-open.svg" alt="unlock"></button>
                   </div>
                 </div>
 

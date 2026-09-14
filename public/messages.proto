@@ -161,6 +161,7 @@ message Msg {
     MSG_DELETE = 154;               // Mod deletes a public chat message (broadcast removal by chat_message_id)
     STAFF_MSG_DELETE = 155;         // Mod deletes a staff chat message (broadcast removal by chat_message_id)
     CHAT_WARNING = 156;             // Server->client: chat spam warning/cooldown notice (see chat_cooldown_ms, chat_warning_level)
+    CPT = 157;                      // Change pressure targets (pt)
   }
 
   // Tool enum
@@ -259,6 +260,7 @@ message Msg {
     string ctry = 39;       // ISO 3166-1 alpha-2 country code derived from IP geolocation
     bool sb = 40;           // Shadow-banned (MOD+ viewers only; never sent true on the subject's own row)
     bool sl = 41;           // Whether the user is currently silenced (chat-only mute: blocks MSG/DM/CHAT_IMG, not drawing)
+    uint32 pt = 42;         // Pressure targets, wire-encoded like the top-level `pt`
   }
   repeated U us = 17;   // Users array
 
@@ -390,6 +392,11 @@ message Msg {
   // === Ink Thinning Fields ===
   uint32 th = 59;               // Thinning * 100 (0-100)
   uint32 sim = 60;              // Simulate pressure (0 or 1)
+
+  // CPT/MD: what pressure drives — size=1, opacity=2, plus 8 once set. 0 means
+  // unset (an older client or stroke) and reads as size only. 4 was hardness,
+  // since removed, and is ignored. See shared/pressureTargets.js.
+  uint32 pt = 215;
 
   // === Room Role Fields (61-62) ===
   string room_role_target_id = 61;  // Target userId for room role assignment

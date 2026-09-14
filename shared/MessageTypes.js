@@ -78,7 +78,10 @@ export const T = {
   MSG_DELETE: 154,
   STAFF_MSG_DELETE: 155,
   // Server->client: chat spam warning/cooldown notice.
-  CHAT_WARNING: 156
+  CHAT_WARNING: 156,
+  // Change what stylus pressure drives (size/opacity/hardness) — see
+  // shared/pressureTargets.js.
+  CPT: 157
 };
 
 /**

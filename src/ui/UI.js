@@ -10,6 +10,7 @@ import { LayerPreview } from './LayerPreview.js';
 import { ResizableSections } from './ResizableSections.js';
 import { isMobile } from '../platform/mobile.js';
 import { appState } from '../state.svelte.js';
+import { DEFAULT_PRESSURE_TARGETS, PRESSURE_TARGET_BITS, pressureTargetsForTool } from '../../shared/pressureTargets.js';
 import { getRightClickActionsForTool, getRightClickActionLabel } from '../config/rightClickActions.js';
 import { replaceSelectWithDropdown } from './dropdownMount.svelte.js';
 import { enableDragScroll } from '../utils/dragScroll.js';
@@ -1004,6 +1005,8 @@ menuBtn: document.getElementById('menuBtn'),
       pressureEnabled: document.getElementById('pressureEnabled'),
       pressureDualSlider: document.getElementById('pressureDualSlider'),
       pressureContainer: document.getElementById('pressure-container'),
+      pressureTargetsRow: document.getElementById('pressureTargets'),
+      pressureTargetInputs: Array.from(document.querySelectorAll('#pressureTargets input[data-pressure-target]')),
       smoothingContainer: document.getElementById('smoothing-container'),
       smoothingSlider: document.querySelector('.slider.smoothing'),
       hardnessSlider: document.querySelector('.slider.hardness'),
@@ -1116,6 +1119,7 @@ menuBtn: document.getElementById('menuBtn'),
 
       sizeLock: document.getElementById('sizeLock'),
       pressureLock: document.getElementById('pressureLock'),
+      pressureTargetsLock: document.getElementById('pressureTargetsLock'),
       smoothingLock: document.getElementById('smoothingLock'),
       spacingLock: document.getElementById('spacingLock'),
       hardnessLock: document.getElementById('hardnessLock'),
@@ -1793,6 +1797,7 @@ menuBtn: document.getElementById('menuBtn'),
 
     sizeContainer.style.display = 'block';
     pressureContainer.style.display = 'block';
+    this.updatePressureTargets(user?.pressureTargets, tool);
     smoothingContainer.style.display = 'block';
     opacityContainer.style.display = 'block';
 
@@ -2618,6 +2623,43 @@ menuBtn: document.getElementById('menuBtn'),
     if (this.elements.pressureContainer) {
       this.elements.pressureContainer.classList.toggle('no-track', !visible);
     }
+    this._pressureTrackVisible = visible;
+    this.updatePressureTargets();
+  }
+
+  /**
+   * Which pressure target checkboxes are ticked.
+   * @returns {number} PRESSURE_TARGET_* bits.
+   */
+  getCheckedPressureTargets() {
+    let targets = 0;
+    for (const input of this.elements.pressureTargetInputs || []) {
+      if (input.checked) targets |= PRESSURE_TARGET_BITS[input.dataset.pressureTarget] || 0;
+    }
+    return targets;
+  }
+
+  /**
+   * Ticks the pressure target checkboxes from `targets`, showing only those the
+   * tool can honour. The row hides for tools with no choice and while pressure
+   * is off.
+   * @param {number} [targets] - PRESSURE_TARGET_* bits; defaults to the last shown.
+   * @param {string} [tool] - Defaults to the last shown.
+   */
+  updatePressureTargets(targets = this._pressureTargets, tool = this._pressureTargetsTool) {
+    this._pressureTargets = targets ?? DEFAULT_PRESSURE_TARGETS;
+    this._pressureTargetsTool = tool;
+    const supported = pressureTargetsForTool(tool);
+    const { pressureTargetsRow, pressureTargetInputs } = this.elements;
+    if (pressureTargetsRow) {
+      pressureTargetsRow.style.display = supported && this._pressureTrackVisible !== false ? '' : 'none';
+    }
+    for (const input of pressureTargetInputs || []) {
+      const bit = PRESSURE_TARGET_BITS[input.dataset.pressureTarget] || 0;
+      input.checked = (this._pressureTargets & bit) !== 0;
+      const label = input.closest('label');
+      if (label) label.style.display = (supported & bit) ? '' : 'none';
+    }
   }
 
   /**
@@ -2642,9 +2684,10 @@ menuBtn: document.getElementById('menuBtn'),
     }
 
     btn.classList.toggle('locked', locked);
+    const name = property === 'pressureTargets' ? 'pressure targets' : property;
     btn.title = locked
-      ? `Unlock ${property} for current tool. Shift-click to unlock all current tool settings`
-      : `Lock ${property} for current tool. Shift-click to lock all current tool settings`;
+      ? `Unlock ${name} for current tool. Shift-click to unlock all current tool settings`
+      : `Lock ${name} for current tool. Shift-click to lock all current tool settings`;
   }
 
   /**

@@ -212,6 +212,14 @@ export function setupDrawingHandlers(wrapHandler, app) {
     }
   });
 
+  // Tool state for this user's next stroke; each MD also carries its own copy.
+  wrapHandler('cpt', (data) => {
+    const user = users.get(data.sessionIndex);
+    if (user) {
+      user.setPressureTargets(data.pressureTargets);
+    }
+  });
+
   wrapHandler('cl', (data) => {
     const user = users.get(data.sessionIndex);
     if (user) {

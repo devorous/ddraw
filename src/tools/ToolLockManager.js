@@ -3,6 +3,11 @@
  */
 
 import { appState } from '../state.svelte.js';
+import {
+  DEFAULT_PRESSURE_TARGETS,
+  PRESSURE_TARGET_OPACITY,
+  PRESSURE_TARGET_SIZE
+} from '../../shared/pressureTargets.js';
 
 /**
  * Default values for every lockable tool property. Single source of truth for
@@ -17,7 +22,8 @@ const PROPERTY_DEFAULTS = {
   blurRadius: 5,
   thinning: 0.5,
   blendMode: 'source-over',
-  pressure: { min: 0, max: 100, enabled: true }
+  pressure: { min: 0, max: 100, enabled: true },
+  pressureTargets: DEFAULT_PRESSURE_TARGETS
 };
 
 /**
@@ -26,7 +32,12 @@ const PROPERTY_DEFAULTS = {
  */
 const TOOL_PROPERTY_OVERRIDES = {
   ink: { smoothing: { locked: true, lockedValue: 10 } },
-  flowPen: { smoothing: { locked: true, lockedValue: 25 } }
+  flowPen: {
+    // Reads 10, applies 40: the Fluid Brush adds FLOW_PEN_BASE_SMOOTHING (30).
+    smoothing: { locked: true, lockedValue: 10 },
+    // The Fluid Brush presses for opacity as well as size.
+    pressureTargets: { locked: true, lockedValue: PRESSURE_TARGET_SIZE | PRESSURE_TARGET_OPACITY }
+  }
 };
 
 /**
@@ -162,18 +173,18 @@ export class ToolLockManager {
    */
   getDefaultToolLocks() {
     const tools = {
-      brush: ['size', 'pressure', 'smoothing', 'hardness', 'opacity', 'blendMode'],
-      flowPen: ['size', 'pressure', 'smoothing', 'hardness', 'opacity', 'blendMode'],
-      ink: ['size', 'pressure', 'smoothing', 'hardness', 'opacity', 'thinning', 'blendMode'],
+      brush: ['size', 'pressure', 'pressureTargets', 'smoothing', 'hardness', 'opacity', 'blendMode'],
+      flowPen: ['size', 'pressure', 'pressureTargets', 'smoothing', 'hardness', 'opacity', 'blendMode'],
+      ink: ['size', 'pressure', 'pressureTargets', 'smoothing', 'hardness', 'opacity', 'thinning', 'blendMode'],
       pixel: ['size', 'pressure', 'smoothing', 'spacing', 'opacity', 'blendMode'],
       line: ['size', 'hardness', 'opacity', 'blendMode'],
       rectangle: ['size', 'hardness', 'opacity', 'blendMode'],
       circle: ['size', 'hardness', 'opacity', 'blendMode'],
-      erase: ['size', 'pressure', 'smoothing', 'hardness', 'opacity'],
+      erase: ['size', 'pressure', 'pressureTargets', 'smoothing', 'hardness', 'opacity'],
       blur: ['size', 'pressure', 'spacing', 'blurRadius', 'opacity', 'blendMode'],
-      circleBlur: ['size', 'pressure', 'smoothing', 'hardness', 'spacing', 'opacity', 'blendMode'],
+      circleBlur: ['size', 'pressure', 'pressureTargets', 'smoothing', 'hardness', 'spacing', 'opacity', 'blendMode'],
       glitchBlur: ['size', 'pressure', 'spacing', 'blurRadius', 'opacity', 'blendMode'],
-      imageBrush: ['size', 'pressure', 'spacing', 'opacity', 'blendMode'],
+      imageBrush: ['size', 'pressure', 'pressureTargets', 'spacing', 'opacity', 'blendMode'],
       pattern: ['size', 'pressure', 'opacity', 'blendMode'],
       confetti: ['size', 'opacity', 'blendMode'],
       fill: ['opacity', 'blendMode'],
@@ -199,7 +210,10 @@ export class ToolLockManager {
           const override = TOOL_PROPERTY_OVERRIDES[tool]?.[prop];
 
           locks[tool][prop] = override ? { ...override } : {
-            locked: prop === 'blendMode' && ['select', 'blur', 'circleBlur', 'glitchBlur', 'text'].includes(tool),
+            // Pressure targets start locked so each tool keeps its own: size
+            // only, apart from the Fluid Brush's override above.
+            locked: prop === 'pressureTargets'
+              || (prop === 'blendMode' && ['select', 'blur', 'circleBlur', 'glitchBlur', 'text'].includes(tool)),
             lockedValue: defaultValue
           };
         }
@@ -276,6 +290,9 @@ export class ToolLockManager {
         if (elements.pressureEnabled) elements.pressureEnabled.checked = pEnabled;
         ui.setPressureTrackVisible(pEnabled);
       }
+      else if (prop === 'pressureTargets') {
+        this.app.setPressureTargets?.(value ?? DEFAULT_PRESSURE_TARGETS);
+      }
       else if (prop === 'smoothing') {
         self.setSmoothing(value);
         ui.updateSmoothingValue(value);
@@ -347,7 +364,7 @@ export class ToolLockManager {
     if (!locks) return;
 
     const { ui } = this.app;
-    const allProps = ['size', 'pressure', 'smoothing', 'spacing', 'hardness', 'opacity', 'blurRadius', 'thinning', 'blendMode'];
+    const allProps = ['size', 'pressure', 'pressureTargets', 'smoothing', 'spacing', 'hardness', 'opacity', 'blurRadius', 'thinning', 'blendMode'];
     
     allProps.forEach(prop => {
       const lock = locks[prop];

@@ -4,27 +4,69 @@
  */
 
 /**
+ * Smoothing the Fluid Brush applies before its slider's own, so the slider's
+ * 0 is still easy to draw with. The slider — and the value on the wire — keep
+ * reading from 0; every client adds this where smoothing is applied.
+ */
+export const FLOW_PEN_BASE_SMOOTHING = 30;
+
+/** Past this the linear EMA curve would reach a zero or negative factor. */
+const LINEAR_SMOOTHING_MAX = 50;
+
+/** Above LINEAR_SMOOTHING_MAX, the EMA factor halves for every this much more smoothing. */
+const EXTENDED_SMOOTHING_HALVING = 30;
+
+/**
+ * The smoothing a tool applies for its slider value.
+ * @param {string} tool
+ * @param {number} smoothing - Slider value, 0-50.
+ * @returns {number} The slider value, or 30-80 for the Fluid Brush.
+ */
+export function effectiveSmoothing(tool, smoothing) {
+  const s = Number(smoothing) || 0;
+  return tool === 'flowPen' ? FLOW_PEN_BASE_SMOOTHING + s : s;
+}
+
+/**
+ * EMA interpolation factor for a smoothing value: how far the smoothed point
+ * moves toward the target per sample. 1 means no smoothing.
+ *
+ * Linear up to 50, where it reaches 0.1. That line would hit zero just past
+ * 56, so above 50 the factor halves every 30 instead — 0.05 at 80.
+ * @param {number} userSmoothing
+ * @param {number} baseline
+ * @returns {number}
+ */
+function smoothingFactor(userSmoothing, baseline) {
+  const s = Math.max(0, userSmoothing || 0);
+  if (s <= LINEAR_SMOOTHING_MAX) {
+    const totalSmoothing = baseline + (s / LINEAR_SMOOTHING_MAX) * (1 - baseline);
+    return 1 - totalSmoothing * 0.9;
+  }
+  return 0.1 * 0.5 ** ((s - LINEAR_SMOOTHING_MAX) / EXTENDED_SMOOTHING_HALVING);
+}
+
+/**
  * Applies Exponential Moving Average (EMA) smoothing to a position and pressure.
  * Used by InputBufferManager to smooth inputs before local rendering and network broadcast.
  * @param {Object} buffer - Smoothing buffer with {x, y, p, isFirst}.
  * @param {number} targetX - Target X position (raw input).
  * @param {number} targetY - Target Y position (raw input).
  * @param {number} targetP - Target pressure (0-1).
- * @param {number} userSmoothing - User smoothing setting (0-50).
+ * @param {number} userSmoothing - Effective smoothing: 0-50, or up to 80 with the
+ *   Fluid Brush's built-in base (see effectiveSmoothing).
  * @param {number} [baseline=0.12] - Baseline smoothing factor (12% default).
  * @param {Object} [out] - Optional output object to write results into.
  * @returns {Object} - Smoothed position and pressure {x, y, p}.
  */
 export function applySmoothingEMA(buffer, targetX, targetY, targetP, userSmoothing, baseline = 0.12, out) {
-  // Calculate total smoothing: baseline (always on) + user contribution
-  // userSmoothing is now 0-50 integer, so divide by 50.0 to get 0-1 range
-  const totalSmoothing = baseline + (userSmoothing / 50.0) * (1 - baseline);
+  const factor = smoothingFactor(userSmoothing, baseline);
 
   // Use out object if provided, otherwise create a temporary one (for compatibility)
   const result = out || {};
 
-  // First point: initialize buffer with target (no smoothing)
-  if (buffer.isFirst || totalSmoothing === 0) {
+  // First point, or no smoothing at all: initialize buffer with target
+  if (buffer.isFirst || factor >= 1) {
     buffer.x = targetX;
     buffer.y = targetY;
     buffer.p = targetP !== undefined ? targetP : 1;
@@ -35,10 +77,6 @@ export function applySmoothingEMA(buffer, targetX, targetY, targetP, userSmoothi
     result.p = buffer.p;
     return result;
   }
-
-  // Calculate interpolation factor
-  // Higher smoothing → smaller factor → more lag → smoother curve
-  const factor = 1 - totalSmoothing * 0.9;
 
   // Apply exponential moving average: new = old + (target - old) * factor
   const dx = (targetX - buffer.x) * factor;

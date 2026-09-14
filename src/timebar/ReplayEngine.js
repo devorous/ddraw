@@ -18,6 +18,7 @@ import * as wasm from '../wasm/ddraw_wasm.js';
 import { readQoiDimensions } from '../../shared/qoi.js';
 import { qoiToCanvas, importSelectionRestoreData } from '../replay/layerStateCodec.js';
 import { normalizeBlendBakeMode } from '../../shared/blendBakeMode.js';
+import { decodePressureTargets } from '../../shared/pressureTargets.js';
 import {
   TEXT_OVERLAY_DEFAULT_LIFETIME_MS,
   TEXT_OVERLAY_DEFAULT_MIN_OPACITY,
@@ -1568,6 +1569,7 @@ export class ReplayEngine {
         thinning: u.thinning,
         pressure: u.pressure,
         simulatePressure: u.simulatePressure,
+        pressureTargets: u.pressureTargets,
         patternMode: u.patternMode,
         patternScale: u.patternScale,
         patternRotation: u.patternRotation,
@@ -2472,6 +2474,7 @@ export class ReplayEngine {
       pressure: state.pressure ?? 1,
       thinning: state.thinning ?? 0.5,
       simulatePressure: state.simulatePressure ?? true,
+      pressureTargets: state.pressureTargets,
       blendMode: state.blendMode || 'source-over',
       // Restore the blend BAKE mode too. Without it the User constructor falls
       // back to 'background', which disables the 'existing' content-mask in
@@ -3137,6 +3140,8 @@ export class ReplayEngine {
             layerIndex: msg.ly,
             blendMode: msg.bm,
             blendBakeMode: msg.bbm === 'background' ? 'background' : (msg.bbm === 'existing' ? 'existing' : undefined),
+            // Tapes recorded before pressure targets have no `pt`: size only.
+            pressureTargets: decodePressureTargets(msg.pt),
           });
           break;
 
@@ -3244,6 +3249,10 @@ export class ReplayEngine {
           if (msg.sim !== undefined) {
             user.setSimulatePressure(msg.sim === 2);
           }
+          break;
+
+        case T.CPT:
+          user.setPressureTargets(decodePressureTargets(msg.pt));
           break;
 
         case T.CBM:

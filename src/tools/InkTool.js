@@ -11,6 +11,15 @@ import {
 } from '../ui/StrokePreviewRenderer.js';
 import { Tool } from './BaseTool.js';
 import { clampRectToCanvas, ensureSizedCanvas, blurExtent } from '../utils/drawing.js';
+import { DEFAULT_PRESSURE_TARGETS } from '../../shared/pressureTargets.js';
+import {
+  PressureMask,
+  compositePressureStroke,
+  hardnessBlurAmount,
+  inkOutlinePoints,
+  inkPressureMaskRadius,
+  usesPressureMask
+} from '../utils/pressureMask.js';
 
 /**
  * Convert perfect-freehand outline points to an SVG path string for Path2D.
@@ -56,6 +65,9 @@ export class InkTool extends Tool {
     this.hardnessCanvas = null;
     this.hardnessCtx = null;
     this._lastDotEffectiveSize = null; // Track effective dot size for hardness calculation
+    this.pressureTargets = DEFAULT_PRESSURE_TARGETS;
+    this.pressureMask = new PressureMask();
+    this._pressureScratch = {};
   }
 
   /**
@@ -106,6 +118,8 @@ export class InkTool extends Tool {
     this.userHardness = user.hardness !== undefined ? user.hardness : 100;
 
     this._strokeSize = user.size;
+    this.pressureTargets = user.pressureTargets ?? DEFAULT_PRESSURE_TARGETS;
+    this.pressureMask.reset();
 
     const startX = Number.isFinite(user?.x) ? user.x : pos.x;
     const startY = Number.isFinite(user?.y) ? user.y : pos.y;
@@ -169,6 +183,7 @@ export class InkTool extends Tool {
     if (this.inputPoints.length === 0) {
       this.inputPoints.push([pos.x, pos.y, pressure]);
       this.pointBuffer.push(pos.x, pos.y, Math.round(pressure * 255));
+      this._stampPressure(user, pos.x, pos.y, pressure);
     } else {
       // Skip points too close to the last point to prevent velocity calculation noise
       // in perfect-freehand when simulatePressure is enabled.
@@ -181,6 +196,7 @@ export class InkTool extends Tool {
 
       this.inputPoints.push([pos.x, pos.y, pressure]);
       this.pointBuffer.push(pos.x, pos.y, Math.round(pressure * 255));
+      this._stampPressure(user, pos.x, pos.y, pressure);
     }
 
     if (this.dirtyBounds) {
@@ -216,6 +232,7 @@ export class InkTool extends Tool {
     if (ddx * ddx + ddy * ddy >= 1 && pressure > 0) {
       this.inputPoints.push([pos.x, pos.y, pressure]);
       this.pointBuffer.push(pos.x, pos.y, Math.round(pressure * 255));
+      this._stampPressure(user, pos.x, pos.y, pressure);
 
       if (this.dirtyBounds) {
         this.dirtyBounds.minX = Math.min(this.dirtyBounds.minX, pos.x);
@@ -235,7 +252,7 @@ export class InkTool extends Tool {
 
     // Use effective dot size if this was a dot, so blur amount is proportional to actual dot size
     const sizeForHardness = this._lastDotEffectiveSize !== null ? this._lastDotEffectiveSize : this._strokeSize;
-    const hardnessCanvas = this.getHardnessCanvas(this.offscreenCanvas, sizeForHardness);
+    const hardnessCanvas = this._getCompositeCanvas(sizeForHardness);
     ctx.drawImage(hardnessCanvas, 0, 0);
 
     this.board.forEachMirrorRegion({ rect: this.dirtyBounds ? {
@@ -254,7 +271,7 @@ export class InkTool extends Tool {
 
     if (this.dirtyBounds && this.dirtyBounds.maxX !== -Infinity) {
       const strokeRadius = this._strokeSize;
-      const blurAmount = (1 - (this.userHardness / 100.0)) * (20 + this._strokeSize * 0.2);
+      const blurAmount = hardnessBlurAmount(this.userHardness / 100, this._strokeSize);
       const safetyMargin = strokeRadius * 0.5;
       const margin = strokeRadius + blurExtent(blurAmount) + safetyMargin + 15;
 
@@ -303,11 +320,14 @@ export class InkTool extends Tool {
     const simulatePressure = activeUser.simulatePressure !== undefined ? activeUser.simulatePressure : true;
     const userThinning = activeUser.thinning !== undefined ? activeUser.thinning : 0.5;
 
+    // Pressure shapes the outline only when it drives size.
+    const strokeInput = inkOutlinePoints(this.inputPoints, this.pressureTargets);
+
     // Single point: render as a dot
     if (this.inputPoints.length === 1) {
       if (!last) return; // Don't preview single dots
 
-      const [x, y, pressure] = this.inputPoints[0];
+      const [x, y, pressure] = strokeInput[0];
       const dotPressure = pressure !== undefined ? pressure : 1;
       const effectiveRadius = this._strokeSize * dotPressure;
       ctx.fillStyle = this.strokeColor;
@@ -322,8 +342,8 @@ export class InkTool extends Tool {
     // Perfect-freehand can collapse these into an unstable preview, so draw a simple
     // round-capped segment instead of leaving the stroke blank between frames.
     if (this.inputPoints.length === 2) {
-      const [x0, y0, pressure0] = this.inputPoints[0];
-      const [x1, y1, pressure1] = this.inputPoints[1];
+      const [x0, y0, pressure0] = strokeInput[0];
+      const [x1, y1, pressure1] = strokeInput[1];
       const averagePressure = ((pressure0 ?? 1) + (pressure1 ?? 1)) / 2;
       const width = Math.max(0.5, this._strokeSize * averagePressure);
       ctx.fillStyle = this.strokeColor;
@@ -345,7 +365,7 @@ export class InkTool extends Tool {
     if (!last && this.inputPoints.length < 3) return;
 
     // When simulatePressure is disabled (tablet mode), use pressure directly
-    const adjustedPoints = this.inputPoints;
+    const adjustedPoints = strokeInput;
 
     const effectiveThinning = !simulatePressure
       ? 0.95
@@ -382,7 +402,7 @@ export class InkTool extends Tool {
     if (!this.offscreenCanvas) return;
     const ctx = this.board.topCtx;
     ctx.globalAlpha = this.userAlpha;
-    const hardnessCanvas = this.getHardnessCanvas(this.offscreenCanvas, this._strokeSize, rect);
+    const hardnessCanvas = this._getCompositeCanvas(this._strokeSize, rect);
     const sourceRect = rect ? clampRectToCanvas(rect, hardnessCanvas) : null;
     this.board.withSelectionMaskClip(ctx, user.id, () => {
       if (sourceRect) {
@@ -463,6 +483,41 @@ export class InkTool extends Tool {
     }
     ctx.fill(new Path2D(pathData));
     ctx.restore();
+  }
+
+  /**
+   * Records a point's pressure in the stroke's mask when pressure drives
+   * opacity or hardness. Called for exactly the points pushed to pointBuffer,
+   * which RemoteInkHandler.handleInkPoints stamps the same way.
+   * @param {Object} user
+   * @param {number} x
+   * @param {number} y
+   * @param {number} pressure - Quantized pressure, 0-1.
+   * @private
+   */
+  _stampPressure(user, x, y, pressure) {
+    if (!usesPressureMask(this.pressureTargets)) return;
+    const thinning = user.thinning !== undefined ? user.thinning : 0.5;
+    this.pressureMask.stampTo(x, y, inkPressureMaskRadius(this.pressureTargets, this._strokeSize, thinning, this.userHardness / 100), pressure);
+  }
+
+  /**
+   * The stroke with hardness applied and, when pressure drives opacity or
+   * hardness, composited through its pressure mask.
+   * @param {number} size
+   * @param {{x:number, y:number, width:number, height:number}|null} [rect=null]
+   * @returns {HTMLCanvasElement}
+   * @private
+   */
+  _getCompositeCanvas(size, rect = null) {
+    if (!usesPressureMask(this.pressureTargets)) return this.getHardnessCanvas(this.offscreenCanvas, size, rect);
+    return compositePressureStroke(this._pressureScratch, this.offscreenCanvas, { x: 0, y: 0 }, this.pressureMask, {
+      targets: this.pressureTargets,
+      hardness: this.userHardness / 100,
+      size,
+      color: this.strokeColor,
+      rect
+    });
   }
 
   getHardnessCanvas(sourceCanvas, size, rect = null) {
@@ -594,7 +649,7 @@ export class InkTool extends Tool {
     }
 
     const size = user?.size ?? this._strokeSize;
-    const blurAmount = (1 - this.userHardness / 100) * (20 + size * 0.2);
+    const blurAmount = hardnessBlurAmount(this.userHardness / 100, size);
     const margin = size + blurExtent(blurAmount) + size * 0.5 + 15;
     const rect = {
       x: Math.floor(bounds.minX - margin),
@@ -628,6 +683,7 @@ export class InkTool extends Tool {
   clearStroke() {
     if (this.offscreenCtx) this.offscreenCtx.clearRect(0, 0, this.offscreenCanvas.width, this.offscreenCanvas.height);
     this.inputPoints = [];
+    this.pressureMask.reset();
     // pointBuffer is NOT wiped here: onPointerUp may push a final point into it,
     // and App.js drains the buffer after onPointerUp returns so remote users
     // receive the final point. Reset is handled in onPointerDown.

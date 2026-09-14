@@ -6,6 +6,14 @@ import {
 } from '../ui/StrokePreviewRenderer.js';
 import { Tool } from './BaseTool.js';
 import { ensureSizedCanvas, blurExtent } from '../utils/drawing.js';
+import { DEFAULT_PRESSURE_TARGETS, pressureSizeFactor } from '../../shared/pressureTargets.js';
+import {
+  PressureMask,
+  compositePressureStroke,
+  hardnessBlurAmount,
+  pressureStampRadius,
+  usesPressureMask
+} from '../utils/pressureMask.js';
 
 /**
  * @fileoverview Flow Pen tool for pressure-sensitive strokes using circle stamping.
@@ -32,6 +40,11 @@ export class FlowPenTool extends Tool {
     this.strokeColor = null;
     this.stampBuffer = [];
     this._tickDirtyBounds = null;
+    this.pressureTargets = DEFAULT_PRESSURE_TARGETS;
+    this.pressureMask = new PressureMask();
+    this._maskSize = 10;
+    this._maskHardness = 1;
+    this._pressureScratch = {};
   }
 
   /**
@@ -86,7 +99,7 @@ export class FlowPenTool extends Tool {
     this.offscreenCtx.clearRect(0, 0, this.offscreenCanvas.width, this.offscreenCanvas.height);
 
     const pressure = this.quantizePressure(user.pressure);
-    const radius = pressure * user.size;
+    const radius = pressureSizeFactor(user, pressure) * user.size;
 
     const color = user.color.slice(0, 3);
     this.strokeColor = `rgb(${color.join(',')})`;
@@ -99,6 +112,13 @@ export class FlowPenTool extends Tool {
     const rawHardness = user.hardness !== undefined ? user.hardness : 100;
     this.userHardness = rawHardness > 1.0 ? rawHardness / 100.0 : rawHardness;
     if (this.userHardness > 1.0) this.userHardness = 1.0;
+
+    // Fixed for the stroke and read exactly as RemotePenHandler.handlePenDown
+    // reads them, so both sides build the same pressure mask.
+    this.pressureTargets = user.pressureTargets ?? DEFAULT_PRESSURE_TARGETS;
+    this._maskSize = user.size;
+    this._maskHardness = rawHardness / 100;
+    this.pressureMask.reset();
 
     this.dirtyBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
     this._tickDirtyBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
@@ -121,7 +141,7 @@ export class FlowPenTool extends Tool {
     if (!user.mousedown || user.panning || !this.lastStampPos) return;
 
     const pressure = this.quantizePressure(user.pressure);
-    const radius = pressure * user.size;
+    const radius = pressureSizeFactor(user, pressure) * user.size;
 
     const avgRadius = (this.lastStampPos.radius + radius) / 2;
     const spacing = Math.max(1, avgRadius * 0.2);
@@ -158,7 +178,7 @@ export class FlowPenTool extends Tool {
     if (!user.mousedown || user.panning || !this.lastStampPos) return;
 
     const pressure = this.quantizePressure(user.pressure);
-    const radius = pressure * user.size;
+    const radius = pressureSizeFactor(user, pressure) * user.size;
     const pressure255End = Math.round(pressure * 255);
 
     const distance = this.getDistance(this.lastStampPos, pos);
@@ -192,6 +212,7 @@ export class FlowPenTool extends Tool {
 
       // Only send key point to network (not interpolated points)
       this.stampBuffer.push(pos.x, pos.y, pressure255End);
+      this._stampPressure(pos.x, pos.y, pressure255End);
       this.lastStampPos = { x: pos.x, y: pos.y, radius, pressure255: pressure255End };
       user.penPoints.push({ x: pos.x, y: pos.y, radius });
     }
@@ -208,7 +229,7 @@ export class FlowPenTool extends Tool {
 
     if (this.lastStampPos) {
       const pressure = this.quantizePressure(user.pressure);
-      const radius = pressure * user.size;
+      const radius = pressureSizeFactor(user, pressure) * user.size;
 
       const avgRadius = (this.lastStampPos.radius + radius) / 2;
       const spacing = Math.max(1, avgRadius * 0.2);
@@ -232,7 +253,12 @@ export class FlowPenTool extends Tool {
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = this.userAlpha;
 
-    this.compositeWithHardness(ctx, this.offscreenCanvas, user.size, 0, 0);
+    const pressured = this._compositePressure(user);
+    if (pressured) {
+      ctx.drawImage(pressured, 0, 0);
+    } else {
+      this.compositeWithHardness(ctx, this.offscreenCanvas, user.size, 0, 0);
+    }
 
     this.board.forEachMirrorRegion({ rect: this.dirtyBounds ? {
       x: this.dirtyBounds.minX,
@@ -242,7 +268,7 @@ export class FlowPenTool extends Tool {
     } : null }, (region) => {
       ctx.save();
       ctx.globalCompositeOperation = 'source-over';
-      this.board.drawMirroredCanvas(ctx, this.offscreenCanvas, region, 0, 0);
+      this.board.drawMirroredCanvas(ctx, pressured || this.offscreenCanvas, region, 0, 0);
       ctx.restore();
     });
 
@@ -250,7 +276,7 @@ export class FlowPenTool extends Tool {
 
     if (this.dirtyBounds && this.dirtyBounds.maxX !== -Infinity) {
       const brushRadius = user.size;
-      const blurAmount = (1 - this.userHardness) * (20 + user.size * 0.2);
+      const blurAmount = hardnessBlurAmount(this.userHardness, user.size);
       const safetyMargin = brushRadius * 0.25;
       const margin = blurExtent(blurAmount) + safetyMargin + 2;
 
@@ -315,6 +341,41 @@ export class FlowPenTool extends Tool {
     }
 
     this.stampBuffer.push(x, y, pressure255);
+    this._stampPressure(x, y, pressure255);
+  }
+
+  /**
+   * Records a stamp's pressure in the stroke's mask when pressure drives
+   * opacity or hardness. Called for exactly the stamps pushed to stampBuffer —
+   * the ones remote users receive — so RemotePenHandler builds the same mask.
+   * @param {number} x
+   * @param {number} y
+   * @param {number} pressure255 - The pressure (0-255), as sent.
+   * @private
+   */
+  _stampPressure(x, y, pressure255) {
+    if (!usesPressureMask(this.pressureTargets)) return;
+    const pressure = pressure255 / 255;
+    this.pressureMask.stampTo(x, y, pressureStampRadius(this.pressureTargets, pressure, this._maskSize, this._maskHardness), pressure);
+  }
+
+  /**
+   * The stroke composited through its pressure mask, or null when pressure only
+   * drives size and compositeWithHardness does the job.
+   * @param {Object} user
+   * @param {{x:number, y:number, width:number, height:number}|null} [rect=null] - Region to redraw.
+   * @returns {HTMLCanvasElement|null}
+   * @private
+   */
+  _compositePressure(user, rect = null) {
+    if (!usesPressureMask(this.pressureTargets) || !this.offscreenCanvas) return null;
+    return compositePressureStroke(this._pressureScratch, this.offscreenCanvas, { x: 0, y: 0 }, this.pressureMask, {
+      targets: this.pressureTargets,
+      hardness: this.userHardness,
+      size: user.size,
+      color: this.strokeColor,
+      rect
+    });
   }
 
   /**
@@ -377,7 +438,7 @@ export class FlowPenTool extends Tool {
     this._tickDirtyBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
 
     const size = user?.size ?? 0;
-    const blurAmount = (1 - this.userHardness) * (20 + size * 0.2);
+    const blurAmount = hardnessBlurAmount(this.userHardness, size);
     const margin = Math.ceil(Math.max(size, 1) + blurExtent(blurAmount) + size * 0.5 + 10);
     return {
       x: Math.max(0, Math.floor(b.minX) - margin),
@@ -397,8 +458,13 @@ export class FlowPenTool extends Tool {
     const ctx = this.board.topCtx;
     ctx.globalAlpha = this.userAlpha;
 
+    const pressured = this._compositePressure(user, rect);
     const draw = () => this.board.withSelectionMaskClip(ctx, user.id, () => {
-      this.compositeWithHardness(ctx, this.offscreenCanvas, user.size, 0, 0);
+      if (pressured) {
+        ctx.drawImage(pressured, 0, 0);
+      } else {
+        this.compositeWithHardness(ctx, this.offscreenCanvas, user.size, 0, 0);
+      }
 
       this.board.forEachMirrorRegion({ rect: this.dirtyBounds ? {
         x: this.dirtyBounds.minX,
@@ -406,7 +472,7 @@ export class FlowPenTool extends Tool {
         width: this.dirtyBounds.maxX - this.dirtyBounds.minX,
         height: this.dirtyBounds.maxY - this.dirtyBounds.minY
       } : null }, (region) => {
-        this.board.drawMirroredCanvas(ctx, this.offscreenCanvas, region, 0, 0);
+        this.board.drawMirroredCanvas(ctx, pressured || this.offscreenCanvas, region, 0, 0);
       });
     });
 
@@ -496,6 +562,7 @@ export class FlowPenTool extends Tool {
     this.stampBuffer = [];
     this.dirtyBounds = null;
     this._tickDirtyBounds = null;
+    this.pressureMask.reset();
   }
 
   /**

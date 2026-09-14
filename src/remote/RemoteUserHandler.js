@@ -5,7 +5,7 @@
 
 import { drawLineArray, bridgeGap, blurExtent } from '../utils/drawing.js';
 import { SELECTION_MODES, getNextBrushIndex } from '../utils/parseGimp.js';
-import { resetSmoothingBuffer, applySmoothingEMA } from '../utils/smoothing.js';
+import { resetSmoothingBuffer, applySmoothingEMA, effectiveSmoothing } from '../utils/smoothing.js';
 import { getPreviewTextLayout, getUserTextLineHeight } from '../utils/textLayout.js';
 import { RemotePenHandler } from './RemotePenHandler.js';
 import { RemoteInkHandler } from './RemoteInkHandler.js';
@@ -13,6 +13,7 @@ import { RemoteSelectionHandler } from './RemoteSelectionHandler.js';
 import { setUserLayerContent, syncUserLayerDisplay, releaseUserLayer } from './userLayerPresence.js';
 import { releaseRemoteScratch } from './remoteScratchReclaim.js';
 import { normalizeBlendBakeMode } from '../../shared/blendBakeMode.js';
+import { pressureSizeFactor } from '../../shared/pressureTargets.js';
 import { CONFETTI_STATE_KEYS } from '../tools/ConfettiTool.js';
 
 /**
@@ -640,7 +641,8 @@ export class RemoteUserHandler {
           const lastPos = { x: user.x, y: user.y };
 
           let pos;
-          const userSmoothing = user.smoothing !== undefined ? user.smoothing : 0;
+          // Includes the Fluid Brush's built-in base, as the sender's InputBufferManager does.
+          const userSmoothing = effectiveSmoothing(user.tool, user.smoothing);
 
           // Apply EMA smoothing for tools that use it locally, matching InputBufferManager behavior
           if (smoothingTools.has(user.tool) && userSmoothing > 0) {
@@ -921,6 +923,9 @@ export class RemoteUserHandler {
     if (data.layerIndex !== undefined) user.setActiveLayer(data.layerIndex);
     if (data.blendMode !== undefined) user.setBlendMode(data.blendMode);
     if (data.blendBakeMode !== undefined) user.setBlendBakeMode(data.blendBakeMode);
+    // The targets this stroke was drawn with, from its own MD — a CPT sent
+    // since (or missed, or not yet replayed) doesn't change how it renders.
+    if (data.pressureTargets !== undefined) user.setPressureTargets(data.pressureTargets);
     if (user.tool === 'confetti' && data.confettiData) {
       this.handleConfettiBrushLoad(user, data.confettiData);
     }
@@ -1046,14 +1051,15 @@ export class RemoteUserHandler {
         if (!user.panning) {
           const circleBlurTool = this.toolManager.getTool(user.tool);
           if (circleBlurTool) {
-            const radius = user.pressure * user.size;
+            const pressureRadius = user.pressure * user.size;
+            const { radius, pressure } = circleBlurTool.stampGeometry(user, pressureRadius);
             circleBlurTool.beginSnapshot(user.id);
             circleBlurTool.strokePoints?.set?.(user.id, [{ x: pos.x, y: pos.y }]);
-            circleBlurTool.lastStampPos.set(user.id, { x: pos.x, y: pos.y, radius });
-            circleBlurTool.stampBlurredCircle(pos.x, pos.y, radius, user);
+            circleBlurTool.lastStampPos.set(user.id, { x: pos.x, y: pos.y, radius: pressureRadius });
+            circleBlurTool.stampBlurredCircle(pos.x, pos.y, radius, user, null, pressure);
             this.board.forEachMirrorRegion({ point: pos }, (region) => {
               const mirrored = this.board.mirrorPointToRegion(pos, region);
-              circleBlurTool.stampBlurredCircle(mirrored.x, mirrored.y, radius, user, region);
+              circleBlurTool.stampBlurredCircle(mirrored.x, mirrored.y, radius, user, region, pressure);
             });
           }
         }
@@ -2808,7 +2814,7 @@ export class RemoteUserHandler {
   }
 
   _brushMargin(user) {
-    const radius = user.pressure * user.size;
+    const radius = pressureSizeFactor(user) * user.size;
     const hardnessFloat = (user.hardness !== undefined ? user.hardness : 100) / 100;
     const blurAmount = hardnessFloat < 1 ? (1 - hardnessFloat) * (20 + user.size * 0.2) : 0;
     return radius + blurExtent(blurAmount) + radius * 0.25 + 2;
@@ -2914,8 +2920,8 @@ export class RemoteUserHandler {
       ? user.currentLine[user.currentLine.length - 1]
       : { x: user.x, y: user.y };
 
-    const oldRadius = user.pressure * user.size;
-    const newRadius = (newPressure ?? user.pressure) * (newSize ?? user.size);
+    const oldRadius = pressureSizeFactor(user) * user.size;
+    const newRadius = pressureSizeFactor(user, newPressure ?? user.pressure) * (newSize ?? user.size);
 
     const commitLineBounds = this._canWindowActiveStroke(user) ? this._activeStrokeWindowBounds(user) : null;
     const activeStrokeCtx = this.board.layerManager.getUserStrokeContext(

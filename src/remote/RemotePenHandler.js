@@ -2,6 +2,14 @@
 import { setUserLayerContent } from './userLayerPresence.js';
 import { touchRemoteScratch } from './remoteScratchReclaim.js';
 import { blurExtent } from '../utils/drawing.js';
+import { DEFAULT_PRESSURE_TARGETS, pressureSizeFactor } from '../../shared/pressureTargets.js';
+import {
+  PressureMask,
+  compositePressureStroke,
+  hardnessBlurAmount,
+  pressureStampRadius,
+  usesPressureMask
+} from '../utils/pressureMask.js';
 
 /**
  * How often an in-progress remote pen preview is redrawn, in ms.
@@ -86,8 +94,14 @@ export class RemotePenHandler {
     user._penOrigin = null;
     user._penDirtyBounds = null;
 
+    // Targets and size for the whole stroke. handleMouseDown has already
+    // applied this stroke's MD, so these are the targets it was drawn with.
+    user._penTargets = user.pressureTargets ?? DEFAULT_PRESSURE_TARGETS;
+    user._penSize = user.size;
+    user._penPressureMask = usesPressureMask(user._penTargets) ? new PressureMask() : null;
+
     const pressure = Math.round(user.pressure * 255) / 255;
-    const radius = pressure * user.size;
+    const radius = pressureSizeFactor(user, pressure) * user.size;
 
     this.expandPenWindowBounds(user, pos.x - radius, pos.y - radius, pos.x + radius, pos.y + radius);
     this.ensurePenOffscreen(user, this.getPenWindowRect(user));
@@ -111,6 +125,7 @@ export class RemotePenHandler {
     ctx.fill();
     ctx.restore();
 
+    this._stampPressure(user, pos.x, pos.y, Math.round(pressure * 255));
     user._penLastStampPos = { x: pos.x, y: pos.y, radius };
     user._penStrokeActive = true;
     // See RemoteInkHandler.handleInkDown — stamp the throttle clock so the
@@ -150,7 +165,7 @@ export class RemotePenHandler {
     for (let i = startIndex, ri = startRi; i < points.length; i += 2, ri++) {
       const x = points[i];
       const y = points[i + 1];
-      const r = (radii[ri] / 255) * user.size;
+      const r = pressureSizeFactor(user, radii[ri] / 255) * user.size;
       const maxR = Math.max(prevRadius ?? r, r);
       bMinX = Math.min(bMinX, x - maxR);
       bMinY = Math.min(bMinY, y - maxR);
@@ -173,7 +188,7 @@ export class RemotePenHandler {
         const x = points[i];
         const y = points[i + 1];
         const pressure = radii[ri] / 255;
-        const r = pressure * user.size;
+        const r = pressureSizeFactor(user, pressure) * user.size;
 
         if (user._penLastStampPos) {
           // Interpolate circles for smooth coverage from the last point
@@ -193,6 +208,7 @@ export class RemotePenHandler {
           ctx.fill();
         }
 
+        this._stampPressure(user, x, y, radii[ri]);
         user._penLastStampPos = { x, y, radius: r };
         if (user.penPoints) {
           user.penPoints.push({ x, y, radius: r });
@@ -218,7 +234,7 @@ export class RemotePenHandler {
     if (!user._penLastStampPos || !user._penOffscreenCtx) return;
 
     const pressure = Math.round(user.pressure * 255) / 255;
-    const radius = pressure * user.size;
+    const radius = pressureSizeFactor(user, pressure) * user.size;
     const dx = pos.x - user._penLastStampPos.x;
     const dy = pos.y - user._penLastStampPos.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
@@ -251,6 +267,7 @@ export class RemotePenHandler {
       );
       ctx.restore();
 
+      this._stampPressure(user, pos.x, pos.y, Math.round(pressure * 255));
       user._penLastStampPos = { x: pos.x, y: pos.y, radius };
       if (user.penPoints) {
         user.penPoints.push({ x: pos.x, y: pos.y, radius });
@@ -305,7 +322,7 @@ export class RemotePenHandler {
     // Track dirty rect from pen stamp points to avoid expensive getImageData on commit
     if (user.penPoints && user.penPoints.length > 0) {
       const hardness = user._penHardness !== undefined ? user._penHardness : 1.0;
-      const blurAmount = (1 - hardness) * (20 + user.size * 0.2);
+      const blurAmount = hardnessBlurAmount(hardness, user.size);
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const pt of user.penPoints) {
         const r = pt.radius || user.size;
@@ -353,12 +370,17 @@ export class RemotePenHandler {
       layerCtx.globalAlpha = user._penAlpha;
 
       const origin = user._penOrigin || { x: 0, y: 0 };
-      this.compositeWithHardness(layerCtx, user._penOffscreen, user.size, user._penHardness, user._penStrokeColor, origin.x, origin.y);
+      const pressured = this._compositePressure(user);
+      if (pressured) {
+        layerCtx.drawImage(pressured, origin.x, origin.y);
+      } else {
+        this.compositeWithHardness(layerCtx, user._penOffscreen, user.size, user._penHardness, user._penStrokeColor, origin.x, origin.y);
+      }
 
       this.board.forEachMirrorRegion({ points: user.penPoints }, (region) => {
         layerCtx.save();
         layerCtx.globalCompositeOperation = 'source-over';
-        this.board.drawMirroredCanvas(layerCtx, user._penOffscreen, region, origin.x, origin.y);
+        this.board.drawMirroredCanvas(layerCtx, pressured || user._penOffscreen, region, origin.x, origin.y);
         layerCtx.restore();
       });
 
@@ -370,6 +392,8 @@ export class RemotePenHandler {
     user._penStrokeActive = false;
     user._penStrokeColor = null;
     user._penAlpha = null;
+    user._penPressureMask = null;
+    user._penPressureScratch = null;
     user.penPoints = [];
   }
 
@@ -468,7 +492,7 @@ export class RemotePenHandler {
     const ctx = user.context;
     const hardness = user._penHardness ?? 1;
     const size = user.size ?? 0;
-    const blurAmount = (1 - hardness) * (20 + size * 0.2);
+    const blurAmount = hardnessBlurAmount(hardness, size);
     const margin = Math.ceil(Math.max(size, 1) + blurExtent(blurAmount) + size * 0.5 + 10);
 
     let clipRect = null;
@@ -494,11 +518,21 @@ export class RemotePenHandler {
     }
 
     const origin = user._penOrigin || { x: 0, y: 0 };
+    const pressured = this._compositePressure(user, clipRect && {
+      x: clipRect.x - origin.x,
+      y: clipRect.y - origin.y,
+      width: clipRect.width,
+      height: clipRect.height
+    });
     this.board.withSelectionMaskClip(ctx, user.id, () => {
-      this.compositeWithHardness(ctx, user._penOffscreen, user.size, user._penHardness, user._penStrokeColor, origin.x, origin.y);
+      if (pressured) {
+        ctx.drawImage(pressured, origin.x, origin.y);
+      } else {
+        this.compositeWithHardness(ctx, user._penOffscreen, user.size, user._penHardness, user._penStrokeColor, origin.x, origin.y);
+      }
 
       this.board.forEachMirrorRegion({ points: user.penPoints }, (region) => {
-        this.board.drawMirroredCanvas(ctx, user._penOffscreen, region, origin.x, origin.y);
+        this.board.drawMirroredCanvas(ctx, pressured || user._penOffscreen, region, origin.x, origin.y);
       });
     });
 
@@ -506,6 +540,42 @@ export class RemotePenHandler {
     ctx.globalAlpha = 1.0;
     this.board.maskPreviewForExistingMode?.(ctx, user, clipRect);
     this.board.app?.remoteUserHandler?.selectionHandler?.drawStaticMaskOutline?.(user, user.maskSelection, false);
+  }
+
+  /**
+   * Records a received stamp's pressure in the stroke's mask, mirroring
+   * FlowPenTool._stampPressure point for point.
+   * @param {User} user - The remote user object.
+   * @param {number} x
+   * @param {number} y
+   * @param {number} pressure255 - The pressure (0-255), as received.
+   * @private
+   */
+  _stampPressure(user, x, y, pressure255) {
+    const mask = user._penPressureMask;
+    if (!mask) return;
+    const pressure = pressure255 / 255;
+    mask.stampTo(x, y, pressureStampRadius(user._penTargets, pressure, user._penSize, user._penHardness ?? 1), pressure);
+  }
+
+  /**
+   * The stroke composited through its pressure mask, or null when pressure only
+   * drives size and compositeWithHardness does the job.
+   * @param {User} user - The remote user object.
+   * @param {{x:number, y:number, width:number, height:number}|null} [rect=null] - Offscreen-local region to redraw.
+   * @returns {HTMLCanvasElement|null}
+   * @private
+   */
+  _compositePressure(user, rect = null) {
+    if (!user._penPressureMask || !user._penOffscreen) return null;
+    if (!user._penPressureScratch) user._penPressureScratch = {};
+    return compositePressureStroke(user._penPressureScratch, user._penOffscreen, user._penOrigin || { x: 0, y: 0 }, user._penPressureMask, {
+      targets: user._penTargets,
+      hardness: user._penHardness ?? 1,
+      size: user.size,
+      color: user._penStrokeColor,
+      rect
+    });
   }
 
   /**
@@ -562,7 +632,7 @@ export class RemotePenHandler {
     // which pads the same shadowBlur call by blurExtent() and +15.
     const size = user.size || 0;
     const hardness = user._penHardness !== undefined ? user._penHardness : 1.0;
-    const blurAmount = (1 - hardness) * (20 + size * 0.2);
+    const blurAmount = hardnessBlurAmount(hardness, size);
     const margin = blurExtent(blurAmount) + size * 0.5 + 15;
     return {
       x: Math.floor(b.minX - margin),

@@ -218,7 +218,7 @@
         <button
           class="art-action-btn hide-btn"
           class:confirm={hideConfirm}
-          title={hideConfirm ? 'Tap again to hide it from this room\'s floating gallery' : 'Hide from the floating gallery (moderator)'}
+          title={hideConfirm ? 'Tap again to hide it from this room\'s floating gallery' : 'Hide from the floating gallery'}
           aria-label="Hide from the floating gallery"
           onclick={handleHideClickEvent}
           onpointerup={handleHidePointerUp}

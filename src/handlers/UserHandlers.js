@@ -461,6 +461,10 @@ export function setupUserHandlers(wsClient, app) {
 
         applyUserImageToolState(app, user, userData);
 
+        if (userData.pressureTargets !== undefined) {
+          user.setPressureTargets(userData.pressureTargets);
+        }
+
         if (userData.registeredName) {
           user.registeredName = userData.registeredName;
         }

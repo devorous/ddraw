@@ -5,6 +5,7 @@
 
 import { Tool } from './BaseTool.js';
 import { clampRectToCanvas } from '../utils/drawing.js';
+import { PRESSURE_TARGET_OPACITY, DEFAULT_PRESSURE_TARGETS, pressureOpacityFactor, pressureSizeFactor } from '../../shared/pressureTargets.js';
 
 /**
  * Eraser tool for removing content from layers.
@@ -158,8 +159,8 @@ export class EraserTool extends Tool {
 
   appendBufferedPoint(user, pos, pressure = user.pressure, size = user.size, opacity = user.opacity) {
     if (!user) return;
-    const point = this._createBufferedPoint(pos.x, pos.y, pressure, size, opacity);
-    if (point.size <= 0 || point.opacity <= 0) return;
+    const point = this._createBufferedPoint(user, pos.x, pos.y, pressure, size, opacity);
+    if (point.size <= 0 || point.opacity <= 0 || point.pressureAlpha <= 0) return;
 
     user.addToLine(point);
     const state = this._ensureStrokeState(user);
@@ -360,7 +361,7 @@ export class EraserTool extends Tool {
    * @private
    */
   _seedWindowBounds(user, pos) {
-    const radius = Math.max(0.5, (user.pressure ?? 1) * (user.size ?? this.userSize));
+    const radius = Math.max(0.5, pressureSizeFactor(user, user.pressure ?? 1) * (user.size ?? this.userSize));
     return this._foldMirrorBounds(pos.x - radius, pos.y - radius, pos.x + radius, pos.y + radius);
   }
 
@@ -486,12 +487,15 @@ export class EraserTool extends Tool {
     return user?.eraseAllLayers ?? this._eraseAllLayers();
   }
 
-  _createBufferedPoint(x, y, pressure, size, opacity) {
+  _createBufferedPoint(user, x, y, pressure, size, opacity) {
     return {
       x,
       y,
-      size: Math.max(0, pressure * size * 2),
-      opacity: opacity !== undefined ? opacity : 1
+      size: Math.max(0, pressureSizeFactor(user, pressure) * size * 2),
+      opacity: opacity !== undefined ? opacity : 1,
+      // Pressure's share of the erase strength. The stroke opacity above is
+      // applied once at commit; this one is stamped into the mask per point.
+      pressureAlpha: pressureOpacityFactor(user, pressure)
     };
   }
 
@@ -767,11 +771,13 @@ export class EraserTool extends Tool {
 
   _stampPoint(user, state, point) {
     const radius = Math.max(0.5, point.size / 2);
+    const alpha = point.pressureAlpha ?? 1;
+    const pressureDrivesOpacity = ((user?.pressureTargets ?? DEFAULT_PRESSURE_TARGETS) & PRESSURE_TARGET_OPACITY) !== 0;
     state.opacity = point.opacity;
 
     if (!state.lastStampPos) {
-      this._stampCircle(state, point.x, point.y, radius, user?.id);
-      state.lastStampPos = { x: point.x, y: point.y, radius };
+      this._stampCircle(state, point.x, point.y, radius, user?.id, pressureDrivesOpacity ? alpha : null);
+      state.lastStampPos = { x: point.x, y: point.y, radius, alpha };
       state.maxRadius = Math.max(state.maxRadius, radius);
       return;
     }
@@ -786,11 +792,13 @@ export class EraserTool extends Tool {
       const x = state.lastStampPos.x + (point.x - state.lastStampPos.x) * t;
       const y = state.lastStampPos.y + (point.y - state.lastStampPos.y) * t;
       const r = state.lastStampPos.radius + (radius - state.lastStampPos.radius) * t;
-      this._stampCircle(state, x, y, r, user?.id);
+      const lastAlpha = state.lastStampPos.alpha ?? 1;
+      const a = lastAlpha + (alpha - lastAlpha) * t;
+      this._stampCircle(state, x, y, r, user?.id, pressureDrivesOpacity ? a : null);
       state.maxRadius = Math.max(state.maxRadius, r);
     }
 
-    state.lastStampPos = { x: point.x, y: point.y, radius };
+    state.lastStampPos = { x: point.x, y: point.y, radius, alpha };
   }
 
   /**
@@ -810,14 +818,35 @@ export class EraserTool extends Tool {
     return `rgb(${r}, ${g}, ${b})`;
   }
 
-  _stampCircle(state, x, y, radius, userId = null) {
+  /**
+   * @param {Object} state - Per-user eraser stroke state.
+   * @param {number} x
+   * @param {number} y
+   * @param {number} radius
+   * @param {number|null} [userId=null] - Clips the stamp to this user's selection mask.
+   * @param {number|null} [alpha=null] - Pressure-driven strength. When set the stamp
+   *   REPLACES the mask under it instead of piling on, so overlapping stamps
+   *   don't erase harder than the pressure that made them.
+   * @private
+   */
+  _stampCircle(state, x, y, radius, userId = null, alpha = null) {
     const ctx = state.maskCtx;
     ctx.save();
     if (userId != null) {
       this.board._applyMaskClipToCtx?.(ctx, userId);
     }
-    ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = state.fillStyle || 'rgba(255,255,255,1)';
+    ctx.globalCompositeOperation = 'source-over';
+    if (alpha !== null) {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = alpha;
+      // Add, not draw over, so anti-aliased edges lerp instead of leaving a
+      // ring — see PressureMask._stamp.
+      ctx.globalCompositeOperation = 'lighter';
+    }
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();

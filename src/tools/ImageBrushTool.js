@@ -12,6 +12,7 @@ import {
   prepareStrokePreviewCanvas
 } from '../ui/StrokePreviewRenderer.js';
 import { Tool } from './BaseTool.js';
+import { pressureOpacityFactor, pressureSizeFactor } from '../../shared/pressureTargets.js';
 
 function getPreviewStampSpacing(user, previewSize = 25) {
   const spacing = Math.max(0, Math.min(50, Number(user?.spacing ?? 0)));
@@ -442,7 +443,7 @@ export class ImageBrushTool extends Tool {
     if (!brush) return;
     const size = user.size;
     const pressure = user.pressure ?? 1;
-    const scaledSize = size * pressure;
+    const scaledSize = size * pressureSizeFactor(user, pressure);
 
     const strokeLayer = user._strokeLayer ?? user.activeLayer ?? 0;
 
@@ -506,7 +507,7 @@ export class ImageBrushTool extends Tool {
     const ox = active?.origin?.x ?? 0;
     const oy = active?.origin?.y ?? 0;
 
-    const opacity = user.opacity !== undefined ? user.opacity : 1;
+    const opacity = (user.opacity !== undefined ? user.opacity : 1) * pressureOpacityFactor(user, pressure);
     ctx.globalAlpha = opacity;
     ctx.beginPath(); // Start a new path for this stamp
     ctx.fillStyle = user.getColorString();

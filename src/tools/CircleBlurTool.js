@@ -5,6 +5,11 @@
 
 import { Tool } from './BaseTool.js';
 import { SnapshotCanvasPool } from '../utils/snapshotCanvasPool.js';
+import {
+  DEFAULT_PRESSURE_TARGETS,
+  PRESSURE_TARGET_SIZE,
+  pressureOpacityFactor
+} from '../../shared/pressureTargets.js';
 
 /**
  * Circle Blur tool - samples pixels and stamps averaged color circles.
@@ -99,7 +104,8 @@ export class CircleBlurTool extends Tool {
   onPointerDown(user, pos) {
     this._activeUser = user;
     this.board.beginStroke(user);
-    const radius = user.pressure * user.size;
+    const pressureRadius = user.pressure * user.size;
+    const { radius, pressure } = this.stampGeometry(user, pressureRadius);
     const userId = user.id ?? this.board.app?.self?.id ?? 0;
 
     this.strokePoints.set(userId, [{ x: pos.x, y: pos.y }]);
@@ -108,17 +114,34 @@ export class CircleBlurTool extends Tool {
     this.beginSnapshot(userId);
 
     // Stamp averaged circle (now synchronous and fast)
-    this.stampBlurredCircle(pos.x, pos.y, radius, user);
+    this.stampBlurredCircle(pos.x, pos.y, radius, user, null, pressure);
 
     // Store for broadcasting (fixes missing first point in remote/replay)
-    this.stampBuffer.push(pos.x, pos.y, radius);
+    this.stampBuffer.push(pos.x, pos.y, pressureRadius);
 
     this.board.forEachMirrorRegion({ point: pos }, (region) => {
       const mirrored = this.board.mirrorPointToRegion(pos, region);
-      this.stampBlurredCircle(mirrored.x, mirrored.y, radius, user, region);
+      this.stampBlurredCircle(mirrored.x, mirrored.y, radius, user, region, pressure);
     });
 
-    this.lastStampPos.set(user.id, { x: pos.x, y: pos.y, radius });
+    this.lastStampPos.set(user.id, { x: pos.x, y: pos.y, radius: pressureRadius });
+  }
+
+  /**
+   * A stamp's drawn radius and pressure, from its pressure radius
+   * (`pressure * size`). Stamps carry the pressure radius — in `lastStampPos`
+   * and on the wire — rather than the drawn radius, so pressure stays
+   * recoverable for opacity and hardness when size isn't a target, and a
+   * size-only stroke carries exactly what it always did.
+   * @param {Object} user
+   * @param {number} pressureRadius
+   * @returns {{radius: number, pressure: number}}
+   */
+  stampGeometry(user, pressureRadius) {
+    const size = user.size ?? 0;
+    const pressure = size > 0 ? Math.max(0, Math.min(1, pressureRadius / size)) : 1;
+    const targets = user.pressureTargets ?? DEFAULT_PRESSURE_TARGETS;
+    return { radius: (targets & PRESSURE_TARGET_SIZE) ? pressureRadius : size, pressure };
   }
 
   /**
@@ -150,7 +173,8 @@ export class CircleBlurTool extends Tool {
         const dy = pos.y - lastStamp.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
 
-        const avgRadius = (lastStamp.radius + radius) / 2;
+        // lastStamp.radius and radius are pressure radii; space by the drawn ones.
+        const avgRadius = (this.stampGeometry(user, lastStamp.radius).radius + this.stampGeometry(user, radius).radius) / 2;
         const spacingPercent = 0.3 + user.spacing * 0.035;
         const minSpacing = Math.max(5, avgRadius * spacingPercent);
 
@@ -164,7 +188,8 @@ export class CircleBlurTool extends Tool {
             const sx = lastStamp.x + dx * t;
             const sy = lastStamp.y + dy * t;
             const sr = lastStamp.radius + (radius - lastStamp.radius) * t;
-            stamps.push({ x: sx, y: sy, r: sr });
+            const { radius: drawRadius, pressure } = this.stampGeometry(user, sr);
+            stamps.push({ x: sx, y: sy, r: drawRadius, pr: sr, pressure });
           }
 
           // Calculate bounding box for all stamps (with sample radius padding)
@@ -207,13 +232,13 @@ export class CircleBlurTool extends Tool {
 
           // Now stamp using cached data
           for (const stamp of stamps) {
-            this.stampBlurredCircleFromCache(stamp.x, stamp.y, stamp.r, user, cachedImageData, left, top);
-            this.stampBuffer.push(stamp.x, stamp.y, stamp.r);
+            this.stampBlurredCircleFromCache(stamp.x, stamp.y, stamp.r, user, cachedImageData, left, top, null, stamp.pressure);
+            this.stampBuffer.push(stamp.x, stamp.y, stamp.pr);
             this._getStrokePoints(user).push({ x: stamp.x, y: stamp.y });
 
             this.board.forEachMirrorRegion({ point: stamp }, (region) => {
               const mirrored = this.board.mirrorPointToRegion(stamp, region);
-              this.stampBlurredCircleFromCache(mirrored.x, mirrored.y, stamp.r, user, cachedImageData, left, top, region);
+              this.stampBlurredCircleFromCache(mirrored.x, mirrored.y, stamp.r, user, cachedImageData, left, top, region, stamp.pressure);
             });
           }
 
@@ -287,10 +312,11 @@ export class CircleBlurTool extends Tool {
       // Skip stamps with invalid or NaN coordinates/radius
       if (isNaN(sx) || isNaN(sy) || isNaN(sr) || sr <= 0) continue;
 
-      stamps.push({ x: sx, y: sy, r: sr });
+      const { radius: r, pressure } = this.stampGeometry(user, sr);
+      stamps.push({ x: sx, y: sy, r, pressure });
       points.push({ x: sx, y: sy });
 
-      const sampleRadius = Math.min(sr * 1.2, sr + 10);
+      const sampleRadius = Math.min(r * 1.2, r + 10);
       minX = Math.min(minX, sx - sampleRadius);
       minY = Math.min(minY, sy - sampleRadius);
       maxX = Math.max(maxX, sx + sampleRadius);
@@ -323,10 +349,10 @@ export class CircleBlurTool extends Tool {
 
     // Apply all stamps
     for (const stamp of stamps) {
-      this.stampBlurredCircleFromCache(stamp.x, stamp.y, stamp.r, user, cachedImageData, left, top);
+      this.stampBlurredCircleFromCache(stamp.x, stamp.y, stamp.r, user, cachedImageData, left, top, null, stamp.pressure);
       this.board.forEachMirrorRegion({ point: stamp }, (region) => {
         const mirrored = this.board.mirrorPointToRegion(stamp, region);
-        this.stampBlurredCircleFromCache(mirrored.x, mirrored.y, stamp.r, user, cachedImageData, left, top, region);
+        this.stampBlurredCircleFromCache(mirrored.x, mirrored.y, stamp.r, user, cachedImageData, left, top, region, stamp.pressure);
       });
     }
 
@@ -348,11 +374,12 @@ export class CircleBlurTool extends Tool {
    * @param {number} radius - Stamp radius.
    * @param {Object} user - The user performing the action.
    */
-  stampBlurredCircle(x, y, radius, user, clipRegion = null) {
+  stampBlurredCircle(x, y, radius, user, clipRegion = null, pressure = 1) {
     const canvasWidth = this.board.getWidth();
     const canvasHeight = this.board.getHeight();
 
-    if (radius <= 0) return;
+    // Zero pressure is a liftoff sample whatever pressure drives.
+    if (radius <= 0 || pressure <= 0) return;
 
     const activeLayer = user.activeLayer ?? this.board.app?.self?.activeLayer ?? 0;
     const userId = user.id ?? this.board.app?.self?.id ?? 0;
@@ -380,10 +407,10 @@ export class CircleBlurTool extends Tool {
 
     if (clipRegion) {
       this.board.withMirrorRegionClip(strokeCtx, clipRegion, () => {
-        this._drawBlurCircle(strokeCtx, x, y, radius, color, user);
+        this._drawBlurCircle(strokeCtx, x, y, radius, color, user, pressure);
       });
     } else {
-      this._drawBlurCircle(strokeCtx, x, y, radius, color, user);
+      this._drawBlurCircle(strokeCtx, x, y, radius, color, user, pressure);
     }
 
     // Mark dirty rect
@@ -405,8 +432,8 @@ export class CircleBlurTool extends Tool {
    * @param {number} cacheLeft - Left offset of cached region.
    * @param {number} cacheTop - Top offset of cached region.
    */
-  stampBlurredCircleFromCache(x, y, radius, user, cachedImageData, cacheLeft, cacheTop, clipRegion = null) {
-    if (radius <= 0 || !cachedImageData) return;
+  stampBlurredCircleFromCache(x, y, radius, user, cachedImageData, cacheLeft, cacheTop, clipRegion = null, pressure = 1) {
+    if (radius <= 0 || pressure <= 0 || !cachedImageData) return;
 
     const activeLayer = user.activeLayer ?? this.board.app?.self?.activeLayer ?? 0;
     const userId = user.id ?? this.board.app?.self?.id ?? 0;
@@ -433,10 +460,10 @@ export class CircleBlurTool extends Tool {
 
     if (clipRegion) {
       this.board.withMirrorRegionClip(strokeCtx, clipRegion, () => {
-        this._drawBlurCircle(strokeCtx, x, y, radius, color, user);
+        this._drawBlurCircle(strokeCtx, x, y, radius, color, user, pressure);
       });
     } else {
-      this._drawBlurCircle(strokeCtx, x, y, radius, color, user);
+      this._drawBlurCircle(strokeCtx, x, y, radius, color, user, pressure);
     }
 
     // Mark dirty rect
@@ -507,14 +534,15 @@ export class CircleBlurTool extends Tool {
    * @param {number} radius - Circle radius.
    * @param {{r: number, g: number, b: number, a: number}} color - Averaged color.
    * @param {Object} user - User object for opacity/hardness.
+   * @param {number} [pressure=1] - This stamp's pressure, for the targets it drives.
    * @private
    */
-  _drawBlurCircle(ctx, x, y, radius, color, user) {
+  _drawBlurCircle(ctx, x, y, radius, color, user, pressure = 1) {
     const { r, g, b } = color;
     const hardness = user.hardness !== undefined ? user.hardness / 100 : 1.0;
 
     ctx.save();
-    ctx.globalAlpha = user.opacity !== undefined ? user.opacity : 1;
+    ctx.globalAlpha = (user.opacity !== undefined ? user.opacity : 1) * pressureOpacityFactor(user, pressure);
 
     if (hardness < 1.0) {
       const innerR = radius * hardness;

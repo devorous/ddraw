@@ -14,7 +14,7 @@ import { T } from '../../shared/MessageTypes.js';
 export const REPLAY_MESSAGE_ALLOWLIST = new Set([
   // Drawing core
   T.MD, T.MU, T.MM,
-  T.CT, T.CC, T.CS, T.CP, T.CSP, T.CSM, T.CTHN, T.CSIM,
+  T.CT, T.CC, T.CS, T.CP, T.CSP, T.CSM, T.CTHN, T.CSIM, T.CPT,
 
   // Tool/layer/pattern/blend state
   T.CL, T.CBM, T.CBR, T.CN, T.CF, T.GPT, T.GMP, T.CPM, T.CSDM, T.CHD,

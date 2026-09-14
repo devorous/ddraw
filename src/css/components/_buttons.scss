@@ -57,7 +57,8 @@
    Lock Buttons
    ======================================== */
 
-.sliderLabel .lock-btn {
+.sliderLabel .lock-btn,
+.pressureTargets .lock-btn {
   background: none;
   border: none;
   cursor: pointer;
@@ -81,16 +82,19 @@
   }
 }
 
-.sliderLabel .lock-btn:hover {
+.sliderLabel .lock-btn:hover,
+.pressureTargets .lock-btn:hover {
   opacity: 1;
   transform: scale(1.1);
 }
 
-.sliderLabel .lock-btn.locked {
+.sliderLabel .lock-btn.locked,
+.pressureTargets .lock-btn.locked {
   opacity: 1;
 }
 
-.sliderLabel .lock-btn:active {
+.sliderLabel .lock-btn:active,
+.pressureTargets .lock-btn:active {
   transform: scale(0.95);
 }
 

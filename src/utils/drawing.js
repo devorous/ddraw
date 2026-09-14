@@ -2,6 +2,8 @@
  * @fileoverview Drawing utility functions for curve interpolation, smoothing, and geometric calculations.
  */
 
+import { pressureOpacityFactor, pressureSizeFactor } from '../../shared/pressureTargets.js';
+
 /** Skia paints a `shadowBlur` tail out to ~1.25x the blur value; see blurExtent(). */
 const BLUR_EXTENT_FACTOR = 1.25;
 const BLUR_EXTENT_PAD = 5;
@@ -581,7 +583,9 @@ export function blurExtent(blurAmount) {
 export function drawLineArray(points, ctx, user, board = null, blendMode = 'source-over') {
   if (!points || points.length === 0) return;
 
-  const opacity = user.opacity !== undefined ? user.opacity : 1;
+  // Pressure applies per segment: the brush commits a segment whenever its
+  // pressure changes, so each one is drawn at a single pressure.
+  const opacity = (user.opacity !== undefined ? user.opacity : 1) * pressureOpacityFactor(user);
   const hardness = user.hardness !== undefined ? user.hardness / 100.0 : 1.0;
 
   const renderStroke = (targetCtx) => {
@@ -590,7 +594,7 @@ export function drawLineArray(points, ctx, user, board = null, blendMode = 'sour
     targetCtx.globalCompositeOperation = blendMode;
     targetCtx.lineCap = 'round';
     targetCtx.lineJoin = 'round';
-    targetCtx.lineWidth = user.pressure * user.size * 2;
+    targetCtx.lineWidth = pressureSizeFactor(user) * user.size * 2;
 
     const color = user?.color ?? [0, 0, 0, 1];
     const colorString = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;

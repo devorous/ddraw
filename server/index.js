@@ -310,6 +310,7 @@ function shouldAllowWsMessage(ws, data) {
     case T.TEXT_APPLY:
     case T.TEXT_REMOVE:
     case T.CSDM:
+    case T.CPT:
       suffix = 'draw';
       config = WS_DRAW_LIMIT;
       break;
@@ -1682,6 +1683,7 @@ function mapUsersForBroadcast(users, viewer = null, room = null) {
         iph: u.ipHash,
         th: u.thinning,
         sim: u.simulatePressure,
+        pt: u.pressureTargets || 0,
         rn: u.registeredName || '',
         // A shadow-banned user's own row must never report `mt: true` even if
         // they're separately muted: shadowban already confines their draws
@@ -2176,12 +2178,12 @@ const INACTIVE_FILTERED_TYPES = new Set([
   T.GPT, T.IMAGE_TOOL, T.CPM, T.SEL_LIFT, T.SEL_MOVE, T.SEL_COMMIT, T.SEL_DELETE,
   T.SEL_FILL, T.SEL_STAMP, T.SEL_CANCEL, T.SEL_TO_BRUSH, T.SEL_FLIP, T.SEL_MERGE,
   T.SEL_PENDING, T.SEL_MASK, T.OBSCURE_REGION, T.IMG_PASTE, T.CLR, T.UNDO, T.REDO, T.FILL, T.CTHN,
-  T.CSIM, T.GLITCH_RESULT, T.TILE_UPDATE, T.TILE_CLEAR
+  T.CSIM, T.CPT, T.GLITCH_RESULT, T.TILE_UPDATE, T.TILE_CLEAR
 ]);
 
 const ACTIVE_STROKE_REPLAY_TYPES = new Set([
   T.MM, T.MD, T.CP, T.CS, T.CT, T.CC, T.CSP, T.CSM, T.CHD, T.CBR,
-  T.CTHN, T.CSIM, T.CL, T.CBM, T.GMP, T.GPT, T.IMAGE_TOOL, T.CPM, T.CF, T.CSDM
+  T.CTHN, T.CSIM, T.CPT, T.CL, T.CBM, T.GMP, T.GPT, T.IMAGE_TOOL, T.CPM, T.CF, T.CSDM
 ]);
 
 function shouldSkipInactiveRecipient(room, client, messageType) {
@@ -2201,7 +2203,7 @@ function shouldSkipInactiveRecipient(room, client, messageType) {
 const JOIN_SYNC_SUPPRESSED_TYPES = new Set([
   T.MD, T.MM, T.CANCEL,
   T.CT, T.CC, T.CS, T.CP, T.CSP, T.CSM, T.CHD, T.CBR,
-  T.CL, T.CBM, T.CF, T.CTHN, T.CSIM,
+  T.CL, T.CBM, T.CF, T.CTHN, T.CSIM, T.CPT,
   // Image-tool payloads are tool state too (StrokeTape.buildImageStateSet), and
   // by far the largest frames on the wire: the tail replays the ones the
   // joiner's strokes need and the serve ends with everyone's latest, so letting
@@ -2510,6 +2512,7 @@ async function handleBroadcast(data, sessionIndex, room, ws) {
       if (data.ly !== undefined) user.activeLayer = data.ly;
       if (data.bm !== undefined) user.blendMode = data.bm;
       if (data.bbm !== undefined) user.blendBakeMode = data.bbm;
+      if (data.pt) user.pressureTargets = data.pt;
       user.mousedown = true;
       room.sessionManager.updateUserActivity(sessionIndex);
 
@@ -2961,6 +2964,10 @@ async function handleBroadcast(data, sessionIndex, room, ws) {
     case T.CSIM:
       user.simulatePressure = data.sim;
       break;
+
+    case T.CPT:
+      user.pressureTargets = data.pt;
+      break;
   }
 
   // Permission-gated actions inside the broadcast path
@@ -3283,7 +3290,7 @@ const BATCHABLE_TYPES = new Set([
   T.MM, T.MD, T.MU, T.CP, T.CS, T.CT, T.CC,
   T.CSP, T.CSM, T.CHD, T.CBR, T.CL, T.CBM, T.CANCEL,
   T.KP, T.TEXT_APPLY, T.TEXT_REMOVE, T.HIDE_CURSOR, T.SHOW_CURSOR, T.GMP, T.GPT, T.IMAGE_TOOL, T.AFK,
-  T.CTHN, T.CSIM, T.FILL, T.CF
+  T.CTHN, T.CSIM, T.CPT, T.FILL, T.CF
 ]);
 
 /**

@@ -4,7 +4,7 @@
  */
 
 import { douglasPeucker } from '../utils/drawing.js';
-import { applySmoothingEMA, applyDeadband, resetSmoothingBuffer } from '../utils/smoothing.js';
+import { applySmoothingEMA, applyDeadband, resetSmoothingBuffer, effectiveSmoothing } from '../utils/smoothing.js';
 import { FLOWPEN_DEADBAND, flowPenDeadbandRadius } from '../config/flowPenFilter.js';
 import * as wasm from '../wasm/ddraw_wasm.js';
 
@@ -872,7 +872,7 @@ export class InputBufferManager {
     // converge on: any residual is inside the deadband and is jitter we chose
     // to discard. Converging on it would re-add the samples just filtered out.
     if (FLOWPEN_DEADBAND.enabled && app.self.tool === 'flowPen') return false;
-    if (app.self.tool !== 'ink' && (!app.self.smoothing || app.self.smoothing === 0)) return false;
+    if (app.self.tool !== 'ink' && !effectiveSmoothing(app.self.tool, app.self.smoothing)) return false;
     if (this.broadcastSmoothBuffer.isFirst) return false;
     const dx = app.self.targetX - this.broadcastSmoothBuffer.x;
     const dy = app.self.targetY - this.broadcastSmoothBuffer.y;
@@ -985,7 +985,7 @@ export class InputBufferManager {
    */
   applyBroadcastSmoothing(points) {
     if (points.length < 3) return points;
-    const userSmoothing = this.app.self.smoothing || 0;
+    const userSmoothing = effectiveSmoothing(this.app.self.tool, this.app.self.smoothing);
     const result = [];
 
     // flowPen filters with a deadband instead of the EMA: it has no lag, so it

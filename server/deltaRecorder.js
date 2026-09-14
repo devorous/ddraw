@@ -17,7 +17,7 @@ const NULL_RECORDER = Object.freeze({
 /** Message types that are meaningful for replay */
 const REPLAY_TYPES = new Set([
   T.MD, T.MM, T.MU,
-  T.CT, T.CC, T.CS, T.CP, T.CSP, T.CSM, T.CHD, T.CTHN, T.CSIM,
+  T.CT, T.CC, T.CS, T.CP, T.CSP, T.CSM, T.CHD, T.CTHN, T.CSIM, T.CPT,
   T.CBM, T.CL, T.CBR, T.CPM, T.CSDM,
   T.MIR, T.MIRROR_REGION, T.CLR, T.CANCEL,
   T.KP, T.TEXT_APPLY, T.TEXT_REMOVE, T.FILL,

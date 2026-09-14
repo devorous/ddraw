@@ -157,6 +157,7 @@ export class SessionManager {
       blurRadius: 5,
       thinning: 51, // 0.5 with offset (50 + 1)
       simulatePressure: 2, // true with offset
+      pressureTargets: 0, // unset = size only (shared/pressureTargets.js)
       name,
       registeredName: '',
       hasDiscord: false,

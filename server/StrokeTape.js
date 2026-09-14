@@ -40,7 +40,7 @@
 function buildToolStateSet(T) {
   return new Set([
     T.CT, T.CC, T.CS, T.CP, T.CSP, T.CSM, T.CHD, T.CBR,
-    T.CL, T.CBM, T.CF, T.CTHN, T.CSIM,
+    T.CL, T.CBM, T.CF, T.CTHN, T.CSIM, T.CPT,
     // Shape geometry is reconstructed from the drawer's draw mode, so a
     // rectangle/circle in the replayed tail needs it the same way it needs the
     // size or colour. Without it a joiner rebuilt every historical shape with

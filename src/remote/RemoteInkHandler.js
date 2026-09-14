@@ -4,6 +4,15 @@ import { getStroke } from 'perfect-freehand';
 import { setUserLayerContent } from './userLayerPresence.js';
 import { touchRemoteScratch } from './remoteScratchReclaim.js';
 import { blurExtent } from '../utils/drawing.js';
+import { DEFAULT_PRESSURE_TARGETS, PRESSURE_TARGET_SIZE } from '../../shared/pressureTargets.js';
+import {
+  PressureMask,
+  compositePressureStroke,
+  hardnessBlurAmount,
+  inkOutlinePoints,
+  inkPressureMaskRadius,
+  usesPressureMask
+} from '../utils/pressureMask.js';
 
 /**
  * How often an in-progress remote ink preview is redrawn, in ms.
@@ -119,6 +128,11 @@ export class RemoteInkHandler {
     user._inkHardness = user.hardness !== undefined ? user.hardness / 100 : 1.0;
 
     user._inkSize = user.size;
+    // handleMouseDown has already applied this stroke's MD, so these are the
+    // targets it was drawn with.
+    user._inkTargets = user.pressureTargets ?? DEFAULT_PRESSURE_TARGETS;
+    user._inkPressureMask = usesPressureMask(user._inkTargets) ? new PressureMask() : null;
+    user._inkPressureScratch = null;
 
     // Don't add the initial point here — match local InkTool behavior where
     // inputPoints starts empty and waits for first move with real pressure data.
@@ -157,6 +171,12 @@ export class RemoteInkHandler {
       // artefacts (sharp blobs) when fed into the perfect-freehand pipeline.
       if (pressure === 0) continue;
       user._inkPoints.push([points[i], points[i + 1], pressure]);
+      if (user._inkPressureMask) {
+        // Mirrors InkTool._stampPressure point for point.
+        const thinning = user.thinning !== undefined ? user.thinning : 0.5;
+        const radius = inkPressureMaskRadius(user._inkTargets, user._inkSize || user.size, thinning, user._inkHardness ?? 1);
+        user._inkPressureMask.stampTo(points[i], points[i + 1], radius, pressure);
+      }
       this.expandInkDirtyBounds(user, points[i], points[i + 1]);
     }
 
@@ -262,10 +282,11 @@ export class RemoteInkHandler {
     if (user._inkPoints && user._inkPoints.length > 0) {
       const size = user._inkSize || user.size;
       const hardness = user._inkHardness !== undefined ? user._inkHardness : 1.0;
-      const blurAmount = (1 - hardness) * (20 + size * 0.2);
+      const blurAmount = hardnessBlurAmount(hardness, size);
+      const sizeDriven = ((user._inkTargets ?? DEFAULT_PRESSURE_TARGETS) & PRESSURE_TARGET_SIZE) !== 0;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const pt of user._inkPoints) {
-        const r = pt[2] * size;
+        const r = (sizeDriven ? pt[2] : 1) * size;
         if (pt[0] - r < minX) minX = pt[0] - r;
         if (pt[0] + r > maxX) maxX = pt[0] + r;
         if (pt[1] - r < minY) minY = pt[1] - r;
@@ -315,7 +336,7 @@ export class RemoteInkHandler {
       layerCtx.globalAlpha = user._inkAlpha;
 
       const origin = user._inkOrigin || { x: 0, y: 0 };
-      const hardnessCanvas = this.getHardnessCanvas(user, user._inkSize || user.size, user._inkHardness, user._inkStrokeColor);
+      const hardnessCanvas = this._getCompositeCanvas(user);
       layerCtx.drawImage(hardnessCanvas, origin.x, origin.y);
 
       this.board.forEachMirrorRegion({ points }, (region) => {
@@ -334,6 +355,8 @@ export class RemoteInkHandler {
     user._inkStrokeColor = null;
     user._inkAlpha = null;
     user._inkDirtyBounds = null;
+    user._inkPressureMask = null;
+    user._inkPressureScratch = null;
   }
 
   /**
@@ -358,6 +381,8 @@ export class RemoteInkHandler {
     const inkSize = user._inkSize || user.size;
     const rawThinning = user.thinning !== undefined ? user.thinning : 0.5;
     const thinning = !simulatePressure ? 0.95 : Math.min(0.99, rawThinning * Math.max(1, inkSize / 10));
+    // Pressure shapes the outline only when it drives size.
+    const strokeInput = inkOutlinePoints(user._inkPoints, user._inkTargets);
 
     ctx.save();
     ctx.translate(-origin.x, -origin.y);
@@ -366,7 +391,7 @@ export class RemoteInkHandler {
       if (user._inkPoints.length === 1) {
         if (!last) return;
 
-        const [x, y, pressure] = user._inkPoints[0];
+        const [x, y, pressure] = strokeInput[0];
         const dotPressure = pressure !== undefined ? pressure : 1;
         ctx.fillStyle = user._inkStrokeColor;
         ctx.beginPath();
@@ -379,8 +404,8 @@ export class RemoteInkHandler {
       // can collapse these into an unstable preview, so draw a simple segment
       // instead of clearing to blank between network updates.
       if (user._inkPoints.length === 2) {
-        const [x0, y0, pressure0] = user._inkPoints[0];
-        const [x1, y1, pressure1] = user._inkPoints[1];
+        const [x0, y0, pressure0] = strokeInput[0];
+        const [x1, y1, pressure1] = strokeInput[1];
         const averagePressure = ((pressure0 ?? 1) + (pressure1 ?? 1)) / 2;
         const width = Math.max(0.5, inkSize * averagePressure);
         ctx.fillStyle = user._inkStrokeColor;
@@ -413,7 +438,7 @@ export class RemoteInkHandler {
       };
 
       // Use pressure values directly without squaring
-      const strokePoints = user._inkPoints;
+      const strokePoints = strokeInput;
 
       const outlinePoints = getStroke(strokePoints, options);
 
@@ -452,13 +477,7 @@ export class RemoteInkHandler {
     }
     user.context.globalAlpha = user._inkAlpha;
 
-    const hardnessCanvas = this.getHardnessCanvas(
-      user,
-      user._inkSize || user.size,
-      user._inkHardness,
-      user._inkStrokeColor,
-      localRect
-    );
+    const hardnessCanvas = this._getCompositeCanvas(user, localRect);
     const sourceRect = localRect ? this._clampRectToCanvas(localRect, hardnessCanvas) : null;
     this.board.withSelectionMaskClip(user.context, user.id, () => {
       if (sourceRect) {
@@ -552,6 +571,29 @@ export class RemoteInkHandler {
    * @param {{x:number,y:number,width:number,height:number}|null} rect - LOCAL
    *   to the (equally windowed) source/hardness canvases, not board space.
    */
+  /**
+   * The stroke with hardness applied and, when pressure drives opacity or
+   * hardness, composited through its pressure mask.
+   * @param {User} user - The remote user object.
+   * @param {{x:number, y:number, width:number, height:number}|null} [rect=null] - Offscreen-local region to redraw.
+   * @returns {HTMLCanvasElement}
+   * @private
+   */
+  _getCompositeCanvas(user, rect = null) {
+    const size = user._inkSize || user.size;
+    if (!user._inkPressureMask) {
+      return this.getHardnessCanvas(user, size, user._inkHardness, user._inkStrokeColor, rect);
+    }
+    if (!user._inkPressureScratch) user._inkPressureScratch = {};
+    return compositePressureStroke(user._inkPressureScratch, user._inkOffscreen, user._inkOrigin || { x: 0, y: 0 }, user._inkPressureMask, {
+      targets: user._inkTargets,
+      hardness: user._inkHardness ?? 1,
+      size,
+      color: user._inkStrokeColor,
+      rect
+    });
+  }
+
   getHardnessCanvas(user, size, hardness, strokeColor, rect = null) {
     const sourceCanvas = user._inkOffscreen;
     if (!user._inkHardnessCanvas ||
@@ -594,7 +636,7 @@ export class RemoteInkHandler {
 
     const size = user._inkSize || user.size;
     const hardness = user._inkHardness !== undefined ? user._inkHardness : 1.0;
-    const blurAmount = (1 - hardness) * (20 + size * 0.2);
+    const blurAmount = hardnessBlurAmount(hardness, size);
     const margin = size + blurExtent(blurAmount) + size * 0.5 + 15;
     return {
       x: Math.floor(bounds.minX - margin),

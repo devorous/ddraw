@@ -5,6 +5,7 @@ import {
 } from './utils/textLayout.js';
 import { truncateUsername } from '../shared/identity.js';
 import { normalizeBlendBakeMode } from '../shared/blendBakeMode.js';
+import { normalizePressureTargets } from '../shared/pressureTargets.js';
 
 /**
  * @fileoverview User model representing a participant in a drawing session.
@@ -39,6 +40,9 @@ export class User {
     this.blurRadius = options.blurRadius !== undefined ? options.blurRadius : 5;
     this.thinning = options.thinning !== undefined ? options.thinning : 0.5;
     this.simulatePressure = options.simulatePressure !== undefined ? options.simulatePressure : true;
+    // What pressure drives (PRESSURE_TARGET_* bits). Per user for the same
+    // reason as shapeDrawMode: every client renders this user's strokes with it.
+    this.pressureTargets = normalizePressureTargets(options.pressureTargets);
     this.patternScale = options.patternScale || 100;
     this.patternShape = options.patternShape || 'circle';
     this.patternName = options.patternName || 'dots';
@@ -295,6 +299,16 @@ export class User {
   }
 
   /**
+   * Sets what pressure drives: size, opacity and/or hardness.
+   *
+   * @param {number} targets - PRESSURE_TARGET_* bits (0 = none).
+   * @returns {void}
+   */
+  setPressureTargets(targets) {
+    this.pressureTargets = normalizePressureTargets(targets);
+  }
+
+  /**
    * Sets the canvas blend mode (composite operation).
    *
    * @param {string} blendMode - The blend mode name.
@@ -384,6 +398,7 @@ export class User {
       blurRadius: this.blurRadius,
       thinning: this.thinning,
       simulatePressure: this.simulatePressure,
+      pressureTargets: this.pressureTargets,
       color: this.color,
       tool: this.tool,
       text: this.text,
@@ -414,10 +429,12 @@ export class User {
    * @returns {void}
    */
   updateFrom(data) {
-    const fields = ['x', 'y', 'size', 'pressure', 'spacing', 'smoothing', 'opacity', 'hardness', 'blurRadius', 'color', 'tool', 'text', 'cursorStyle', 'username', 'blendMode', 'blendBakeMode', 'activeLayer', 'patternScale', 'patternShape', 'patternName', 'patternRotation', 'patternSpacing', 'font', 'textPositionMultiplier', 'textPositionOffset', 'hasDiscord', 'isSupporter'];
+    const fields = ['x', 'y', 'size', 'pressure', 'spacing', 'smoothing', 'opacity', 'hardness', 'blurRadius', 'color', 'tool', 'text', 'cursorStyle', 'username', 'blendMode', 'blendBakeMode', 'activeLayer', 'patternScale', 'patternShape', 'patternName', 'patternRotation', 'patternSpacing', 'font', 'textPositionMultiplier', 'textPositionOffset', 'hasDiscord', 'isSupporter', 'pressureTargets'];
       fields.forEach(field => {
         if (data[field] !== undefined) {
-          if (field === 'font') {
+          if (field === 'pressureTargets') {
+            this.setPressureTargets(data[field]);
+          } else if (field === 'font') {
             this[field] = normalizeTextFont(data[field]);
           } else if (field === 'textPositionMultiplier') {
             this.setTextPositionMultiplier(data[field]);

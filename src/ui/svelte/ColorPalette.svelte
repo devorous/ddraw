@@ -9,6 +9,7 @@
     toggleFloatingPaletteVisibility
   } from '../../state.svelte.js';
   import Dropdown from './Dropdown.svelte';
+  import { PRESSURE_TARGET_BITS, PRESSURE_TARGET_SIZE } from '../../../shared/pressureTargets.js';
 
   let { onColorSelect = null } = $props();
 
@@ -38,7 +39,7 @@
 
   const TOOL_LABELS = {
     brush: 'Brush',
-    flowPen: 'Flow Pen',
+    flowPen: 'Fluid Brush',
     ink: 'Ink',
     pixel: 'Pixel',
     line: 'Line',
@@ -138,7 +139,7 @@
       if (value == null) continue;
       // Size is already shown from the preset itself; don't print it twice.
       if (key === 'size') continue;
-      if (key === 'pressureMin' || key === 'pressureMax' || key === 'pressureEnabled') continue;
+      if (key === 'pressureMin' || key === 'pressureMax' || key === 'pressureEnabled' || key === 'pressureTargets') continue;
       rows.push({ label: SETTING_LABELS[key] || prettifyKey(key), value: formatSettingValue(key, value) });
     }
 
@@ -146,12 +147,22 @@
       rows.push({
         label: 'Pressure',
         value: settings.pressureEnabled
-          ? `${Math.round(settings.pressureMin ?? 0)}–${Math.round(settings.pressureMax ?? 100)}%`
+          ? `${Math.round(settings.pressureMin ?? 0)}–${Math.round(settings.pressureMax ?? 100)}%${formatPressureTargets(settings.pressureTargets)}`
           : 'Off'
       });
     }
 
     return rows;
+  }
+
+  // Size-only is how pressure always worked (and what presets saved before
+  // targets existed mean), so only mention targets when they differ.
+  function formatPressureTargets(targets) {
+    if (targets == null || targets === PRESSURE_TARGET_SIZE) return '';
+    const names = Object.entries(PRESSURE_TARGET_BITS)
+      .filter(([, bit]) => targets & bit)
+      .map(([name]) => name[0].toUpperCase() + name.slice(1));
+    return ` · ${names.length ? names.join(', ') : 'nothing'}`;
   }
 
   function getToolLabel(tool) {

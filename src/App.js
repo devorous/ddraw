@@ -73,6 +73,11 @@ import * as wasm from './wasm/ddraw_wasm.js';
 import { initSvelteUI, syncStoresFromApp, showProfile as showProfileDialog } from './ui/svelte/AppUI.svelte.js';
 import { appState, addRecentColor, getCustomPresetKey, toggleRecorderPanel } from './state.svelte.js';
 import { normalizeBlendBakeMode } from '../shared/blendBakeMode.js';
+import {
+  DEFAULT_PRESSURE_TARGETS,
+  normalizePressureTargets,
+  pressureSizeFactor
+} from '../shared/pressureTargets.js';
 
 const TEXT_FONT_SETTINGS_STORAGE_KEY = 'topDrawTextFontSettings';
 const SHAPE_DRAW_MODE_STORAGE_KEY = 'topDrawShapeDrawMode';
@@ -1532,6 +1537,15 @@ export class DrawingApp {
       this.updateCurrentToolPresetSettings();
     });
 
+    // What pressure drives: size / opacity / hardness checkboxes
+    for (const input of elements.pressureTargetInputs || []) {
+      input.addEventListener('change', () => {
+        this.handlePressureTargetsChange();
+        this.clearActiveCustomPreset();
+        this.updateCurrentToolPresetSettings();
+      });
+    }
+
     // Glitch-blur "Fast preview" toggle — defer the heavy WASM render to release.
     if (elements.glitchFastPreview) {
       elements.glitchFastPreview.addEventListener('change', () => {
@@ -2028,6 +2042,7 @@ export class DrawingApp {
     };
     if (elements.sizeLock) elements.sizeLock.addEventListener('click', (e) => handleLockClick('size', e));
     if (elements.pressureLock) elements.pressureLock.addEventListener('click', (e) => handleLockClick('pressure', e));
+    if (elements.pressureTargetsLock) elements.pressureTargetsLock.addEventListener('click', (e) => handleLockClick('pressureTargets', e));
     if (elements.smoothingLock) elements.smoothingLock.addEventListener('click', (e) => handleLockClick('smoothing', e));
     if (elements.spacingLock) elements.spacingLock.addEventListener('click', (e) => handleLockClick('spacing', e));
     if (elements.hardnessLock) elements.hardnessLock.addEventListener('click', (e) => handleLockClick('hardness', e));
@@ -3162,6 +3177,7 @@ export class DrawingApp {
     this.wsClient.broadcastLayerChange(this.self.activeLayer);
     this.wsClient.broadcastThinningChange(this.self.thinning);
     this.wsClient.broadcastSimulatePressureChange(this.self.simulatePressure);
+    this.wsClient.broadcastPressureTargetsChange(this.self.pressureTargets);
     if (this.self.patternBrush) {
       this.wsClient.broadcastPatternBrush(this._buildPatternPayload());
     }
@@ -3608,6 +3624,7 @@ export class DrawingApp {
     this.wsClient.broadcastLayerChange(activeLayer);
     this.wsClient.broadcastThinningChange(this.self.thinning);
     this.wsClient.broadcastSimulatePressureChange(this.self.simulatePressure);
+    this.wsClient.broadcastPressureTargetsChange(this.self.pressureTargets);
     if (this.self.patternBrush) {
       this.wsClient.broadcastPatternBrush(this._buildPatternPayload());
     }
@@ -3749,6 +3766,7 @@ export class DrawingApp {
     this.wsClient.broadcastLayerChange(activeLayer);
     this.wsClient.broadcastThinningChange(this.self.thinning);
     this.wsClient.broadcastSimulatePressureChange(this.self.simulatePressure);
+    this.wsClient.broadcastPressureTargetsChange(this.self.pressureTargets);
     if (this.self.patternBrush) {
       this.wsClient.broadcastPatternBrush(this._buildPatternPayload());
     }
@@ -5187,10 +5205,10 @@ export class DrawingApp {
     // Update pressure indicators only for tools that use pressure
     const pressureTools = ['brush', 'flowPen', 'ink', 'erase', 'circleBlur', 'glitchBlur'];
     if (pressureTools.includes(this.self.tool) && cursorStyle === 'circle') {
-      this.ui.updatePressureCursorRadius(this.self.pressure * size, size, this.tabletDetected);
+      this.ui.updatePressureCursorRadius(pressureSizeFactor(this.self) * size, size, this.tabletDetected);
     }
     if ((this.self.tool === 'imageBrush' || cursorStyle === 'square') && this.self.tool !== 'glitchBlur') {
-      this.ui.updatePressureSquareSize(this.self.pressure * size, size, this.tabletDetected);
+      this.ui.updatePressureSquareSize(pressureSizeFactor(this.self) * size, size, this.tabletDetected);
     }
     this.ui.updateSelfTextStyle(size, this.self.color, this.self.font);
     this.ui.updateSizeValue(size);
@@ -5333,6 +5351,26 @@ export class DrawingApp {
     this.updateActiveToolPreview();
   }
 
+  /** A pressure target checkbox changed. */
+  handlePressureTargetsChange() {
+    this.setPressureTargets(this.ui.getCheckedPressureTargets());
+  }
+
+  /**
+   * Sets what pressure drives for the local user, shows it in tool options and
+   * tells the room.
+   * @param {number} targets - PRESSURE_TARGET_* bits.
+   */
+  setPressureTargets(targets) {
+    const next = normalizePressureTargets(targets);
+    const changed = next !== this.self.pressureTargets;
+    this.self.setPressureTargets(next);
+    this.ui.updatePressureTargets(next, this.self.tool);
+    if (changed && this.connected) {
+      this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastPressureTargetsChange(next));
+    }
+  }
+
   async handleBrushFileLoad(e) {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
@@ -5405,6 +5443,7 @@ export class DrawingApp {
         settings.pressureMin = Number(this.ui.elements.pressureMinSlider?.value ?? 0);
         settings.pressureMax = Number(this.ui.elements.pressureMaxSlider?.value ?? 100);
         settings.pressureEnabled = !!this.pressureEnabled;
+        settings.pressureTargets = this.self.pressureTargets;
       } else if (property === 'opacity') {
         settings.opacity = this.self.opacity;
       } else {
@@ -5470,6 +5509,8 @@ export class DrawingApp {
         this.pressureEnabled = !!value;
         if (this.ui.elements.pressureEnabled) this.ui.elements.pressureEnabled.checked = !!value;
         this.ui.setPressureTrackVisible(!!value);
+      } else if (property === 'pressureTargets') {
+        this.setPressureTargets(value);
       }
     }
   }
@@ -5889,10 +5930,10 @@ export class DrawingApp {
       const pressureTools = ['brush', 'flowPen', 'ink', 'erase', 'circleBlur', 'glitchBlur'];
       const cursorStyle = this.ui.getCursorStyleForTool(this.self.tool, this.self);
       if (pressureTools.includes(this.self.tool) && cursorStyle === 'circle') {
-        this.ui.updatePressureCursorRadius(pressure * this.self.size, this.self.size, this.tabletDetected);
+        this.ui.updatePressureCursorRadius(pressureSizeFactor(this.self, pressure) * this.self.size, this.self.size, this.tabletDetected);
       }
       if ((this.self.tool === 'imageBrush' || cursorStyle === 'square') && this.self.tool !== 'glitchBlur') {
-        this.ui.updatePressureSquareSize(pressure * this.self.size, this.self.size, this.tabletDetected);
+        this.ui.updatePressureSquareSize(pressureSizeFactor(this.self, pressure) * this.self.size, this.self.size, this.tabletDetected);
       }
 
       // If stroke start was deferred, now we have real pressure - start the stroke
@@ -6174,9 +6215,9 @@ export class DrawingApp {
       const pressureTools = ['brush', 'flowPen', 'ink', 'erase', 'circleBlur', 'glitchBlur'];
       const cursorStyle = this.ui.getCursorStyleForTool(this.self.tool, this.self);
       if (pressureTools.includes(this.self.tool) && cursorStyle === 'circle') {
-        this.ui.updatePressureCursorRadius(estimatedPressure * this.self.size, this.self.size, this.tabletDetected);
+        this.ui.updatePressureCursorRadius(pressureSizeFactor(this.self, estimatedPressure) * this.self.size, this.self.size, this.tabletDetected);
       } else if ((this.self.tool === 'imageBrush' || cursorStyle === 'square') && this.self.tool !== 'glitchBlur') {
-        this.ui.updatePressureSquareSize(estimatedPressure * this.self.size, this.self.size, this.tabletDetected);
+        this.ui.updatePressureSquareSize(pressureSizeFactor(this.self, estimatedPressure) * this.self.size, this.self.size, this.tabletDetected);
       }
       this.ui.updateSelfCursor(pos.x, pos.y, this.self.size);
     } else {
@@ -6387,7 +6428,9 @@ export class DrawingApp {
     const metadata = {
       layerIndex: this.self?.activeLayer ?? 0,
       blendMode: this.self?.blendMode || 'source-over',
-      blendBakeMode: this.self?.blendBakeMode || 'background'
+      blendBakeMode: this.self?.blendBakeMode || 'background',
+      // Every stroke records the targets it was drawn with.
+      pressureTargets: this.self?.pressureTargets ?? DEFAULT_PRESSURE_TARGETS
     };
     if (this.self?.tool === 'confetti') {
       const confettiTool = this.toolManager?.getTool('confetti');

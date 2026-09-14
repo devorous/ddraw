@@ -459,6 +459,27 @@ html[data-mobile='true'] {
   white-space: nowrap;
 }
 
+// What pressure drives, under the pressure track. Plain in-flow checkboxes
+// rather than in-track overlays, so they take ordinary clicks.
+.pressureTargets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin-top: 4px;
+  padding-left: 3px;
+  // Reach into the container's lock column so this row's lock lines up with
+  // the slider locks above it (see "Lock column" below).
+  margin-right: calc(-1 * var(--lock-col, 0px));
+  color: var(--text-secondary);
+
+  // `left`, not a transform, so the shared hover/active scale still applies.
+  > .lock-btn {
+    position: relative;
+    left: 6px;
+  }
+}
+
 
 /* ----------------------------------------
    Row overlays

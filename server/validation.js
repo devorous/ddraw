@@ -3,6 +3,7 @@
 import { T, Tool } from '../shared/MessageTypes.js';
 import { CHAT_IMAGE_MIME_TYPES, INLINE_IMAGE_MIME_TYPES, validateDataUrlImage, validateImageBytes } from './imageValidation.js';
 import { normalizeBlendBakeMode } from '../shared/blendBakeMode.js';
+import { sanitizePressureTargetsWire } from '../shared/pressureTargets.js';
 
 export function hasOwnField(message, key) {
   return !!message && Object.prototype.hasOwnProperty.call(message, key);
@@ -239,6 +240,7 @@ export async function sanitizeMessage(data) {
         if (data.ly !== undefined) sanitized.ly = clampInt(data.ly, 0, MAX_LAYER_INDEX, 0);
         if (data.bm !== undefined) sanitized.bm = sanitizeBlendMode(data.bm);
         if (data.bbm !== undefined) sanitized.bbm = sanitizeBlendBakeMode(data.bbm);
+        if (data.pt !== undefined) sanitized.pt = sanitizePressureTargetsWire(data.pt);
       }
       return sanitized;
     }
@@ -607,6 +609,10 @@ export async function sanitizeMessage(data) {
 
     case T.CSIM:
       sanitized.sim = clampInt(data.sim, 0, 2, 2);
+      return sanitized;
+
+    case T.CPT:
+      sanitized.pt = sanitizePressureTargetsWire(data.pt);
       return sanitized;
 
     case T.ROOM_PREVIEW: {

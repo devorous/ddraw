@@ -8,6 +8,7 @@ import { packColor, unpackColor } from '../../shared/ColorUtils.js';
 import { BOARD_SIZE_PRESETS } from '../../shared/boardSizes.js';
 import { normalizeTextFont } from '../config/textFonts.js';
 import { normalizeBlendBakeMode, decodeBlendBakeMode } from '../../shared/blendBakeMode.js';
+import { encodePressureTargets, decodePressureTargets } from '../../shared/pressureTargets.js';
 import { ClientIdentity } from './ClientIdentity.js';
 import { StrokeFingerprintLog, isCommitType } from '../../shared/StrokeFingerprint.js';
 
@@ -24,11 +25,11 @@ function normalizeRoomBoardSize(boardSize) {
 const PS_SCALE = 10;
 const ACTIVE_STROKE_REPLAY_TYPES = new Set([
   T.MD, T.MM, T.CP, T.CS, T.CT, T.CC, T.CSP, T.CSM, T.CHD, T.CBR,
-  T.CTHN, T.CSIM, T.CL, T.CBM, T.GMP, T.GPT, T.IMAGE_TOOL, T.CPM, T.CF, T.CSDM
+  T.CTHN, T.CSIM, T.CPT, T.CL, T.CBM, T.GMP, T.GPT, T.IMAGE_TOOL, T.CPM, T.CF, T.CSDM
 ]);
 const ACTIVE_STROKE_STATE_TYPES = new Set([
   T.CP, T.CS, T.CT, T.CC, T.CSP, T.CSM, T.CHD, T.CBR,
-  T.CTHN, T.CSIM, T.CL, T.CBM, T.GMP, T.GPT, T.IMAGE_TOOL, T.CPM, T.CF, T.CSDM
+  T.CTHN, T.CSIM, T.CPT, T.CL, T.CBM, T.GMP, T.GPT, T.IMAGE_TOOL, T.CPM, T.CF, T.CSDM
 ]);
 
 /**
@@ -181,7 +182,7 @@ export class WebSocketClient {
       T.CSP, T.CSM, T.CHD, T.CBR, T.CL, T.CBM, T.CANCEL, T.CF,
       // Tool-parameter changes that affect how an in-progress stroke is rendered.
       // Must stay ordered with the drawing events above.
-      T.CTHN, T.CSIM, T.GMP, T.GPT, T.IMAGE_TOOL, T.CPM, T.CSDM,
+      T.CTHN, T.CSIM, T.CPT, T.GMP, T.GPT, T.IMAGE_TOOL, T.CPM, T.CSDM,
       // Canvas-state operations that mutate the stroke history.
       // These MUST be queued so they execute AFTER any drawing events (MD/MM/MU)
       // that preceded them in real time.  If they bypass the queue they can
@@ -1127,6 +1128,7 @@ export class WebSocketClient {
           ipHash: u.iph,
           thinning: u.th ? (u.th - 1) / 100 : undefined,
           simulatePressure: u.sim !== undefined ? u.sim === 2 : undefined,
+          pressureTargets: decodePressureTargets(u.pt),
           patternBrush: u.pb,
           patternScale: u.patternScale,
           patternShape: u.patternShape,
@@ -1224,6 +1226,9 @@ export class WebSocketClient {
           layerIndex: data.ly,
           blendMode: data.bm,
           blendBakeMode: decodeBlendBakeMode(data.bbm),
+          // Always resolved: a stroke without `pt` predates pressure targets
+          // and is size-only, whatever the sender has selected now.
+          pressureTargets: decodePressureTargets(data.pt),
           seq: data.seq
         });
         break;
@@ -1271,6 +1276,10 @@ export class WebSocketClient {
       case T.CSIM:
         // Offset encoding: 0=not set, 1=false, 2=true
         this.emit('csim', { sessionIndex: data.u, simulatePressure: (data.sim ?? 0) === 2, seq: data.seq });
+        break;
+
+      case T.CPT:
+        this.emit('cpt', { sessionIndex: data.u, pressureTargets: decodePressureTargets(data.pt), seq: data.seq });
         break;
 
       case T.FILL:
@@ -2159,6 +2168,7 @@ export class WebSocketClient {
     if (metadata.layerIndex !== undefined) msg.ly = metadata.layerIndex;
     if (metadata.blendMode) msg.bm = metadata.blendMode;
     if (metadata.blendBakeMode) msg.bbm = normalizeBlendBakeMode(metadata.blendBakeMode);
+    if (metadata.pressureTargets !== undefined) msg.pt = encodePressureTargets(metadata.pressureTargets);
     if (metadata.confettiData) msg.g = metadata.confettiData;
     this.send(msg);
   }
@@ -2252,6 +2262,15 @@ export class WebSocketClient {
   broadcastSimulatePressureChange(simulate) {
     // Offset encoding: 0=not set, 1=false, 2=true (avoids proto3 zero-default ambiguity)
     this.send({ t: T.CSIM, sim: simulate ? 2 : 1 });
+  }
+
+  /**
+   * Broadcasts what pressure drives.
+   * @param {number} targets - PRESSURE_TARGET_* bits.
+   * @returns {void}
+   */
+  broadcastPressureTargetsChange(targets) {
+    this.send({ t: T.CPT, pt: encodePressureTargets(targets) });
   }
 
   /**
