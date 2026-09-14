@@ -11,6 +11,7 @@ import { getPatternTile, getPatternDrawScale } from '../utils/patternTile.js';
 import { paintHardenedEraseMask, needsHardenedEraseMask } from '../utils/eraseMask.js';
 import { Tool } from './BaseTool.js';
 import { assetLibrary } from '../ui/AssetLibrary.js';
+import { marchingAntsStep } from '../utils/marchingAnts.js';
 
 function cloneSelectionRect(rect) {
   if (!rect) return null;
@@ -895,8 +896,15 @@ export class SelectTool extends Tool {
   startMarchingAnts() {
     if (this.animationId) return;
 
-    const animate = () => {
-      this.marchingAntsOffset = (this.marchingAntsOffset + 1) % 16;
+    let lastDraw = 0;
+    const animate = (now) => {
+      const step = marchingAntsStep(this.board.lowPowerMode, now, lastDraw);
+      if (!step) {
+        this.animationId = requestAnimationFrame(animate);
+        return;
+      }
+      lastDraw = now;
+      this.marchingAntsOffset = (this.marchingAntsOffset + step) % 16;
       if (this.selection && !this.isDragging && !this.isTransforming && !this.activeHandle && !this.isSelecting && !this.isRotating) {
         this.board.clearTop();
         if (this.isMaskMode) {

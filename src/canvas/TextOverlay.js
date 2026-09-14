@@ -18,6 +18,8 @@ export const TEXT_OVERLAY_DEFAULT_HOLD_MS = 0;                // no full-opacity
 export const TEXT_OVERLAY_DEFAULT_MIN_OPACITY = 0;            // fade fully to transparent
 export const TEXT_OVERLAY_DEFAULT_FADE_MS = TEXT_OVERLAY_DEFAULT_LIFETIME_MS - TEXT_OVERLAY_DEFAULT_HOLD_MS;
 const DEFAULT_LIFETIME_MS = TEXT_OVERLAY_DEFAULT_LIFETIME_MS;
+// Low power: minimum ms between fade steps (~10/s instead of every frame).
+const LOW_POWER_FADE_STEP_MS = 100;
 const DEFAULT_HOLD_MS = TEXT_OVERLAY_DEFAULT_HOLD_MS;
 const DEFAULT_MIN_OPACITY = TEXT_OVERLAY_DEFAULT_MIN_OPACITY;
 const DEFAULT_FADE_MS = TEXT_OVERLAY_DEFAULT_FADE_MS;
@@ -301,9 +303,17 @@ export class TextOverlay {
 
   _ensureRafLoop() {
     if (this._rafHandle) return;
+    let lastStep = 0;
     const tick = () => {
       this._rafHandle = null;
       const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      // Low power steps the fade ~10x/s instead of every frame; the ramp is slow
+      // enough that it looks the same, and each step rewrites every fading node.
+      if (this.board?.lowPowerMode && now - lastStep < LOW_POWER_FADE_STEP_MS) {
+        this._rafHandle = requestAnimationFrame(tick);
+        return;
+      }
+      lastStep = now;
       const expired = [];
       for (const [id, stored] of this.records) {
         const age = now - stored.bornAt;

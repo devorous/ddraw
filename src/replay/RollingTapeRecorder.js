@@ -32,6 +32,10 @@ const DEFAULT_ENABLED = true;
 const INTRA_CHECKPOINT_INTERVAL_MS = 30_000;
 /** Low-res scrub-preview cadence (matches Recorder + TimeMachine). */
 const VISUAL_CHECKPOINT_INTERVAL_MS = 2000;
+// Low power: every visual checkpoint is a full-raster downscale plus a toBlob
+// GPU readback, and they only feed scrub thumbnails — the replay itself seeks
+// from deltas and anchor checkpoints. Coarser thumbnails, same tape.
+const LOW_POWER_VISUAL_CHECKPOINT_INTERVAL_MS = 8000;
 const VISUAL_CHECKPOINT_SCALE = 1 / 6;
 const VISUAL_CHECKPOINT_QUALITY = 0.6;
 /** How often the ring buffer is pruned back to the horizon. */
@@ -163,6 +167,23 @@ export class RollingTapeRecorder {
     }
 
     this._notify();
+  }
+
+  /**
+   * Space visual checkpoints further apart on low power devices. Applied live:
+   * a running tape reschedules its next capture at the new interval.
+   * @param {boolean} lowPower
+   */
+  setLowPower(lowPower) {
+    const next = !!lowPower;
+    if (next === !!this._lowPower) return;
+    this._lowPower = next;
+    if (this._enabled) this._scheduleVisual();
+  }
+
+  /** @returns {number} ms between visual checkpoint captures */
+  getVisualCheckpointIntervalMs() {
+    return this._lowPower ? LOW_POWER_VISUAL_CHECKPOINT_INTERVAL_MS : VISUAL_CHECKPOINT_INTERVAL_MS;
   }
 
   /**
@@ -696,7 +717,7 @@ export class RollingTapeRecorder {
     this._visualTimer = setTimeout(() => {
       this._captureVisualCheckpoint();
       if (this._enabled) this._scheduleVisual();
-    }, VISUAL_CHECKPOINT_INTERVAL_MS);
+    }, this.getVisualCheckpointIntervalMs());
   }
 
   /** @private */

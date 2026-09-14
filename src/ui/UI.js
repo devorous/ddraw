@@ -32,6 +32,9 @@ import {
 
 import selectIconUrl from '../assets/icons/select-icon.svg';
 import brushIconUrl from '../assets/icons/brush-icon.svg';
+import classicBrushIconUrl from '../assets/icons/classic-brush-icon.svg';
+import fluidBrushIconUrl from '../assets/icons/fluid-brush-icon.svg';
+import pixelBrushIconUrl from '../assets/icons/pixel-brush-icon.svg';
 import lineIconUrl from '../assets/icons/line-icon.svg';
 import rectangleIconUrl from '../assets/icons/rectangle-icon.svg';
 import circleIconUrl from '../assets/icons/circle-icon.svg';
@@ -933,6 +936,9 @@ export class UI {
       rotateBtn: document.getElementById('rotateBtn'),
       selectBtn: document.getElementById('selectBtn'),
       brushBtn: document.getElementById('brushBtn'),
+      classicBrushBtn: document.getElementById('classicBrushBtn'),
+      penBtn: document.getElementById('penBtn'),
+      pixelBrushBtn: document.getElementById('pixelBrushBtn'),
       lineBtn: document.getElementById('lineBtn'),
       rectangleBtn: document.getElementById('rectangleBtn'),
       circleBtn: document.getElementById('circleBtn'),
@@ -1097,7 +1103,6 @@ menuBtn: document.getElementById('menuBtn'),
       eraserModeOptions: document.getElementById('eraserModeOptions'),
       inkdropperModeOptions: document.getElementById('inkdropperModeOptions'),
       inkdropperAutoSwitch: document.getElementById('inkdropperAutoSwitch'),
-      brushModeOptions: document.getElementById('brushModeOptions'),
       shapeModeOptions: document.getElementById('shapeModeOptions'),
       circleBlurModeOptions: document.getElementById('circleBlurModeOptions'),
       fillModeOptions: document.getElementById('fillModeOptions'),
@@ -1194,10 +1199,10 @@ menuBtn: document.getElementById('menuBtn'),
   async _preloadSVGIcons() {
     const iconMap = {
       select: selectIconUrl,
-      brush: brushIconUrl,
-      pen: brushIconUrl, // Reuse brush icon
-      flowPen: brushIconUrl, // Reuse brush icon
-      ink: brushIconUrl, // Reuse brush icon
+      brush: classicBrushIconUrl,
+      flowPen: fluidBrushIconUrl,
+      ink: brushIconUrl,
+      pixel: pixelBrushIconUrl,
       line: lineIconUrl,
       rectangle: rectangleIconUrl,
       circle: circleIconUrl,
@@ -1746,7 +1751,7 @@ menuBtn: document.getElementById('menuBtn'),
       selfCircle, selfPressureCircle, selfDot, selfSquare, selfPressureSquare, selfCrosshair, selfHand, selfZoom, selfText, selfName,
       brushImage, brushFileInput, sizeContainer, pressureContainer, smoothingContainer,
       brushSpacing, brushHardness, opacityContainer, cursorStyleContainer, cursorStyleSelect, blurRadiusContainer,
-      selectionModeOptions, eraserModeOptions, inkdropperModeOptions, brushModeOptions, shapeModeOptions, circleBlurModeOptions, fillModeOptions, patternModeOptions, imageBrushModeOptions, confettiModeOptions, fontContainer, textPositionMultiplierContainer, textPositionOffsetContainer, textRenderModeContainer
+      selectionModeOptions, eraserModeOptions, inkdropperModeOptions, shapeModeOptions, circleBlurModeOptions, fillModeOptions, patternModeOptions, imageBrushModeOptions, confettiModeOptions, fontContainer, textPositionMultiplierContainer, textPositionOffsetContainer, textRenderModeContainer
     } = this.elements;
 
     // Toggle a flex-order class on the .sliders container so text-tool option
@@ -1788,7 +1793,6 @@ menuBtn: document.getElementById('menuBtn'),
     if (selectionModeOptions) selectionModeOptions.style.display = 'none';
     if (eraserModeOptions) eraserModeOptions.style.display = 'none';
     if (inkdropperModeOptions) inkdropperModeOptions.style.display = 'none';
-    if (brushModeOptions) brushModeOptions.style.display = 'none';
     if (shapeModeOptions) shapeModeOptions.style.display = 'none';
     if (circleBlurModeOptions) circleBlurModeOptions.style.display = 'none';
     if (this.elements.fillModeOptions) this.elements.fillModeOptions.style.display = 'none';
@@ -1826,14 +1830,12 @@ menuBtn: document.getElementById('menuBtn'),
       case 'flowPen':
         this.applyLocalCursorStyle(tool, user);
         brushHardness.style.display = 'block';
-        if (brushModeOptions) brushModeOptions.style.display = 'block';
         if (cursorStyleContainer) cursorStyleContainer.style.display = 'block';
         break;
 
       case 'ink':
         this.applyLocalCursorStyle(tool, user);
         brushHardness.style.display = 'block';
-        if (brushModeOptions) brushModeOptions.style.display = 'block';
         if (cursorStyleContainer) cursorStyleContainer.style.display = 'block';
         if (this.elements.inkThinningContainer) this.elements.inkThinningContainer.style.display = 'block';
         break;
@@ -1929,7 +1931,6 @@ menuBtn: document.getElementById('menuBtn'),
       case 'pixel':
         this.applyLocalCursorStyle(tool, user);
         brushSpacing.style.display = 'block';
-        if (brushModeOptions) brushModeOptions.style.display = 'block';
         break;
 
       case 'fill':
@@ -2031,8 +2032,10 @@ menuBtn: document.getElementById('menuBtn'),
       zoom: this.elements.zoomBtn,
       rotate: this.elements.rotateBtn,
       select: this.elements.selectBtn,
-      brush: this.elements.brushBtn,
-      pixel: this.elements.brushBtn,
+      brush: this.elements.classicBrushBtn,
+      flowPen: this.elements.penBtn,
+      ink: this.elements.brushBtn,
+      pixel: this.elements.pixelBrushBtn,
       line: this.elements.lineBtn,
       rectangle: this.elements.rectangleBtn,
       circle: this.elements.circleBtn,
@@ -2049,8 +2052,7 @@ menuBtn: document.getElementById('menuBtn'),
     };
 
     Object.values(buttons).forEach(btn => btn && btn.classList.remove('selected'));
-    let buttonTool = tool;
-    if (tool === 'flowPen' || tool === 'ink') buttonTool = 'brush';
+    const buttonTool = tool;
     if (buttons[buttonTool]) {
       buttons[buttonTool].classList.add('selected');
     }
@@ -2078,7 +2080,8 @@ menuBtn: document.getElementById('menuBtn'),
   updateToolGroupButtons(tool, buttons) {
     const groups = [
       { id: 'moveGroup', primary: 'pan', slots: ['pan', 'zoom', 'rotate'] },
-      { id: 'shapesGroup', primary: 'line', slots: ['line', 'rectangle', 'circle'] },
+      { id: 'brushGroup', primary: 'ink', slots: ['ink', 'brush', 'flowPen', 'pixel'] },
+      { id: 'shapesGroup', primary: 'rectangle', slots: ['rectangle', 'line', 'circle'] },
       { id: 'blurGroup', primary: 'blur', slots: ['blur', 'circleBlur', 'glitchBlur'] }
     ];
 
@@ -2206,17 +2209,6 @@ menuBtn: document.getElementById('menuBtn'),
       this.elements.debugBtn = debugBtn;
       debugBtn.classList.toggle('selected', !!enabled);
     }
-  }
-
-  /**
-   * Updates the brush mode radio buttons.
-   * @param {string} mode - Selected brush mode
-   */
-  updateBrushModeDisplay(mode) {
-    const radios = document.querySelectorAll('input[name="brushMode"]');
-    radios.forEach(r => {
-      r.checked = (r.value === mode);
-    });
   }
 
   /**

@@ -17,7 +17,6 @@ for (const [exportName, exportValue] of Object.entries(wasm)) {
 }
 
 const TPS_NORMAL = 60;
-const TPS_LOW_POWER = 30;
 
 /**
  * Idle tile reclamation, in ms between passes and tiles inspected per pass.
@@ -91,8 +90,102 @@ export function detectLowPowerDevice() {
 
 let _detectionResult = null;
 
+/**
+ * Synthetic draw-workload micro-benchmark, run once at boot instead of the
+ * static heuristics below. Times a fixed, seeded sequence of stroke draws
+ * (same shape as real brush strokes: variable width/color, ragged path,
+ * round joins) on a detached canvas, so the number reflects the actual
+ * per-frame cost this app pays rather than a proxy for it (core count, GPU
+ * name string). Deterministic PRNG so repeated runs/machines are comparable.
+ *
+ * MEASUREMENT ONLY for now — recorded on window.__performanceDetection as
+ * `benchmarkMs` alongside the proxy-based score, not yet folded into
+ * `isLowPower`. Needs numbers from more than two machines before a cutoff is
+ * trustworthy; see the score() derivation once that data exists.
+ *
+ * Fixed 1080p surface for every device, deliberately NOT sized from the
+ * viewport/DPR: a per-device surface (tried and measured — see git history)
+ * made the raw ms number viewport-relative, so any cutoff would've needed to
+ * be viewport-relative too. A bigger fixed surface only widens the gap
+ * between fast/slow hardware (confirmed: going from 900x700 to 1900x1200
+ * roughly doubled both machines' times while keeping their ratio to each
+ * other about the same) — so fix the surface large and get a bigger,
+ * easier-to-threshold signal instead of a workload-accurate one.
+ *
+ * @returns {number|null} Elapsed ms for STROKES strokes, or null if a 2D
+ *   context couldn't be created.
+ */
+function _runSynthDrawBenchmark() {
+  const BASE_WIDTH = 1920;
+  const BASE_HEIGHT = 1080;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = BASE_WIDTH;
+  canvas.height = BASE_HEIGHT;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const STROKES = 20;
+  const WARMUP_STROKES = 5;
+  const POINTS_PER_STROKE = 40;
+
+  // xorshift32, seeded — deterministic across runs/machines so the timing
+  // difference reflects hardware, not which random strokes got drawn.
+  let seed = 0x9e3779b9;
+  const rand = () => {
+    seed ^= seed << 13; seed |= 0;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5; seed |= 0;
+    return ((seed >>> 0) % 100000) / 100000;
+  };
+
+  const drawStrokes = (n) => {
+    for (let i = 0; i < n; i++) {
+      ctx.beginPath();
+      ctx.lineWidth = 4 + rand() * 20;
+      ctx.strokeStyle = `rgba(${Math.floor(rand() * 255)}, ${Math.floor(rand() * 255)}, ${Math.floor(rand() * 255)}, 0.7)`;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      let x = rand() * BASE_WIDTH;
+      let y = rand() * BASE_HEIGHT;
+      ctx.moveTo(x, y);
+      for (let p = 0; p < POINTS_PER_STROKE; p++) {
+        x += (rand() - 0.5) * 40;
+        y += (rand() - 0.5) * 40;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    // Force rasterization — browsers may otherwise defer the actual paint
+    // work past the last stroke() call.
+    ctx.getImageData(0, 0, 1, 1);
+  };
+
+  // Untimed warm-up: the first-ever 2D context on a page pays a one-off
+  // driver/pipeline init cost (measured ~65ms on a 4070 Super vs ~2ms
+  // steady-state) that has nothing to do with the device's real drawing
+  // throughput. Pay that cost here, outside the clock.
+  drawStrokes(WARMUP_STROKES);
+
+  // Median of several timed passes, not one sample: measured on the weak
+  // laptop this pushes the coefficient of variation from ~0.43 (single
+  // boot-time sample) down toward the ~0.22 seen from repeated sampling —
+  // OS/driver scheduling jitter on a contended machine doesn't average out
+  // of a single reading, but the median of a few does.
+  const SAMPLES = 3;
+  const samples = [];
+  for (let i = 0; i < SAMPLES; i++) {
+    const start = performance.now();
+    drawStrokes(STROKES);
+    samples.push(performance.now() - start);
+  }
+  samples.sort((a, b) => a - b);
+  return samples[Math.floor(SAMPLES / 2)];
+}
+
 function _runLowPowerDetection() {
   let score = 0;
+  const benchmarkMs = _runSynthDrawBenchmark();
 
   const cores = navigator.hardwareConcurrency || 0;
   if (cores > 0 && cores <= 4) score += 2;
@@ -136,7 +229,10 @@ function _runLowPowerDetection() {
     memory,
     renderer,
     maxTexture,
-    maxVertexUnits
+    maxVertexUnits,
+    benchmarkMs,
+    dpr: window.devicePixelRatio || 1,
+    viewport: `${window.innerWidth}x${window.innerHeight}`
   };
 
   return isLowPower;
@@ -156,8 +252,8 @@ export class InputBufferManager {
 
     /** @type {boolean} */
     this.lowPowerMode = detectLowPowerDevice();
-    /** @type {number} */
-    this.tickRate = this.lowPowerMode ? TPS_LOW_POWER : TPS_NORMAL;
+    /** @type {number} Always full rate; low power no longer slows input. */
+    this.tickRate = TPS_NORMAL;
     /** @type {number} */
     this.tickInterval = 1000 / this.tickRate;
     /** @type {number|null} */
@@ -257,7 +353,6 @@ export class InputBufferManager {
   setTickRate(tps) {
     this.tickRate = tps;
     this.tickInterval = 1000 / tps;
-    this.lowPowerMode = tps <= TPS_LOW_POWER;
     if (this.tickTimer) {
       this.stopTickLoop();
       this.startTickLoop();

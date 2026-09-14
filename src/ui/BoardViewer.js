@@ -254,7 +254,9 @@ export class BoardViewer {
       return;
     }
 
-    const autoVisible = zoom > AUTO_SHOW_ZOOM;
+    // Low power never auto-opens it: the viewer redraws the whole board every
+    // frame on top of the main view. Opening it by hand still works.
+    const autoVisible = zoom > AUTO_SHOW_ZOOM && !this.app.isLowPowerModeActive?.();
     const shouldShow = autoVisible || this.manualVisible || this.followUserId;
     const visibilityChanged = shouldShow !== this.visible;
     const crossedAutoThreshold = autoVisible !== this._lastMainZoomAutoVisible;

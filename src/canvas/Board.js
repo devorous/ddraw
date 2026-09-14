@@ -242,6 +242,9 @@ export class Board {
 
     /** @type {number} Target render FPS (0 = uncapped/on-demand) */
     this.targetFPS = 0;
+    // Resolved low power flag, set by App._applyLowPowerPreference. Read by
+    // overlay-only paths (marching ants) that throttle themselves on weak devices.
+    this.lowPowerMode = false;
     /** @type {number} DOMHighResTimeStamp of the last completed composite */
     this._lastCompositeTime = 0;
     /** @type {number|null} RAF ID for the persistent render loop */

@@ -56,10 +56,6 @@ export function setupSnapshotHandlers(wsClient, app) {
     app.snapshotManager.handleServerRequest();
   });
 
-  wsClient.on('sync_checkpoint_minted', (data) => {
-    app.snapshotManager.handleCheckpointMinted(data);
-  });
-
   // Handle region restoration (broadcast from server)
   wsClient.on('board_snapshot_region_restore', (data) => {
     if (!data.snapshotLayers || data.snapshotLayers.length === 0) return;

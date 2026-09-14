@@ -5,7 +5,6 @@
  *
  *   30s timer (paused while disconnected/AFK) →
  *     send SYNC_PARITY_CHECK { seq, parityCount, parityRollingHash }
- *     optionally piggyback a diagnostic pixel probe for the latest checkpoint
  *
  *   server replies SYNC_PARITY_OK    → clear any pending mismatch UI, done
  *   server replies SYNC_PARITY_MISMATCH (with inline manifest):
@@ -34,16 +33,13 @@ export class ParityClient {
    *   is fully diagnosed: { serverCount, clientCount, percent, missing[],
    *   extra[], mismatched[] }
    * @param {() => void} [opts.onOk] - Called on each successful heartbeat ack.
-   * @param {() => Object|null} [opts.getPixelProbe] - Optional diagnostic
-   *   checkpoint-vs-canvas tile divergence payload to piggyback on CHECK.
    * @param {number} [opts.intervalMs]
    */
-  constructor({ wsClient, shouldPause, onMismatch, onOk, getPixelProbe, intervalMs = DEFAULT_HEARTBEAT_MS } = {}) {
+  constructor({ wsClient, shouldPause, onMismatch, onOk, intervalMs = DEFAULT_HEARTBEAT_MS } = {}) {
     this.wsClient = wsClient;
     this.shouldPause = shouldPause || (() => false);
     this.onMismatch = onMismatch || (() => {});
     this.onOk = onOk || (() => {});
-    this.getPixelProbe = getPixelProbe || (() => null);
     this.intervalMs = intervalMs;
 
     this._timer = null;
@@ -123,13 +119,6 @@ export class ParityClient {
       parityCount: summary.count,
       parityRollingHash: summary.rollingHash,
     };
-
-    try {
-      const pixelProbe = this.getPixelProbe();
-      if (pixelProbe) Object.assign(msg, pixelProbe);
-    } catch (err) {
-      console.warn('[ParityClient] pixel probe failed', err);
-    }
 
     ws.send(msg);
   }

@@ -2,6 +2,7 @@ import { getHomography } from '../utils/homographyAccess.js';
 import { paintHardenedEraseMask, needsHardenedEraseMask } from '../utils/eraseMask.js';
 import { setUserLayerContent } from './userLayerPresence.js';
 import { getPatternTile, getPatternDrawScale } from '../utils/patternTile.js';
+import { marchingAntsStep } from '../utils/marchingAnts.js';
 
 /**
  * RemoteSelectionHandler - Handles selection tool rendering and operations for remote users
@@ -373,8 +374,15 @@ export class RemoteSelectionHandler {
     if (this._isReplayMode()) return;
     if (this.remoteSelectionAnimationId) return;
 
-    const animate = () => {
-      this.remoteSelectionOffset = (this.remoteSelectionOffset + 1) % 16;
+    let lastDraw = 0;
+    const animate = (now) => {
+      const step = marchingAntsStep(this.board?.lowPowerMode, now, lastDraw);
+      if (!step) {
+        this.remoteSelectionAnimationId = requestAnimationFrame(animate);
+        return;
+      }
+      lastDraw = now;
+      this.remoteSelectionOffset = (this.remoteSelectionOffset + step) % 16;
 
       // Get fresh values each frame
       const users = this.getUsersMap();

@@ -964,9 +964,23 @@
           <a class="tool btn" id="selectBtn" title="Select (S)">
             <img src="/images/select-icon.svg" alt="Select">
           </a>
-          <a class="tool btn selected" id="brushBtn" title="Brush (B/P)">
-            <img src="/images/brush-icon.svg" alt="Brush">
-          </a>
+          <!-- Group: Brush Modes -->
+          <div class="toolGroup" id="brushGroup">
+            <a class="tool btn selected" id="brushBtn" title="Ink (B/P)">
+              <img src="/images/brush-icon.svg" alt="Ink">
+            </a>
+            <div class="toolSubgroup">
+              <a class="tool btn" id="classicBrushBtn" title="Classic Brush">
+                <img src="/images/classic-brush-icon.svg" alt="Classic Brush">
+              </a>
+              <a class="tool btn" id="penBtn" title="Fluid">
+                <img src="/images/fluid-brush-icon.svg" alt="Fluid">
+              </a>
+              <a class="tool btn" id="pixelBrushBtn" title="Pixel Brush">
+                <img src="/images/pixel-brush-icon.svg" alt="Pixel Brush">
+              </a>
+            </div>
+          </div>
           <a class="tool btn" id="eraseBtn" title="Eraser (E)">
             <img src="/images/eraser-icon.svg" alt="Eraser">
           </a>
@@ -976,12 +990,12 @@
 
           <!-- Group: Shapes -->
           <div class="toolGroup" id="shapesGroup">
-            <a class="tool btn" id="lineBtn" title="Line (L)">
-              <img src="/images/line-icon.svg" alt="Line">
+            <a class="tool btn" id="rectangleBtn" title="Rectangle (R)">
+              <img src="/images/rectangle-icon.svg" alt="Rectangle">
             </a>
             <div class="toolSubgroup">
-              <a class="tool btn" id="rectangleBtn" title="Rectangle (R)">
-                <img src="/images/rectangle-icon.svg" alt="Rectangle">
+              <a class="tool btn" id="lineBtn" title="Line (L)">
+                <img src="/images/line-icon.svg" alt="Line">
               </a>
               <a class="tool btn" id="circleBtn" title="Circle (C)">
                 <img src="/images/circle-icon.svg" alt="Circle">
@@ -1382,31 +1396,6 @@
                     </span>
                   </label>
                   <p class="tool-toggle-hint">Automatically switch to previous tool after sampling.</p>
-                </div>
-              </div>
-
-              <!-- Brush Mode Options -->
-              <div id="brushModeOptions" style="display: none;">
-                <div class="selection-mode-container">
-                  <label class="modeLabel">Brush Mode</label>
-                  <div class="radio-group brush-mode-grid">
-                    <label class="radio-option">
-                      <input type="radio" name="brushMode" value="ink">
-                      <span>Ink</span>
-                    </label>
-                    <label class="radio-option">
-                      <input type="radio" name="brushMode" value="fluid" checked>
-                      <span>Fluid</span>
-                    </label>
-                    <label class="radio-option">
-                      <input type="radio" name="brushMode" value="pixel">
-                      <span>Pixel</span>
-                    </label>
-                    <label class="radio-option">
-                      <input type="radio" name="brushMode" value="classic">
-                      <span>Classic</span>
-                    </label>
-                  </div>
                 </div>
               </div>
 

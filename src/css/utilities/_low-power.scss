@@ -1,0 +1,17 @@
+/* ========================================
+   Low Power Mode
+   ======================================== */
+
+// App._applyLowPowerPreference sets html[data-low-power] from the resolved
+// lowPowerMode preference ('auto' via device detection, or an explicit 'on').
+//
+// backdrop-filter re-blurs whatever sits behind a panel each time that area
+// repaints. The floating zoom group, context menu, toasts and selection menu sit
+// over the board, which repaints on every composite while anyone is drawing.
+// Their surfaces are already 0.85+ alpha, so they stay legible without it.
+//
+// Obscured regions keep their blur: there it hides content, it isn't decoration.
+html[data-low-power='true'] *:not(.obscureRegionSurface) {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}

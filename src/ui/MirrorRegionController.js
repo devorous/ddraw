@@ -886,7 +886,7 @@ export class MirrorRegionController {
     wrapper.style.pointerEvents = 'none';
 
     wrapper.appendChild(this._createControlButton('Edit', () => this.startEditingRegion(region.id), 'rgba(17,24,39,0.92)'));
-    wrapper.appendChild(this._createControlButton('Select', () => this.app.saveController?.openSaveDialogForRegion(region), 'rgba(30,64,175,0.92)'));
+    wrapper.appendChild(this._createControlButton('Save', () => this.app.saveController?.openSaveDialogForRegion(region), 'rgba(30,64,175,0.92)'));
     wrapper.appendChild(this._createControlButton('X', () => this.removeRegion(region.id), 'rgba(127,29,29,0.95)'));
 
     return wrapper;

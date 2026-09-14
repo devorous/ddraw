@@ -532,12 +532,15 @@ html[data-sidebar-side='left'] .sidebarToggleBtn .panelIcon {
   @include collapsed-group-left-flyout;
 }
 
-.tools.force-shapes-collapse #shapesGroup {
+.tools.force-blur-collapse #blurGroup {
   @include collapsed-group;
   @include collapsed-group-left-flyout;
 }
 
-.tools.force-blur-collapse #blurGroup {
+/* Brush modes and shapes always collapse into flyouts, regardless of rail
+   height — grouped by default rather than only once the rail overflows,
+   since these each bundle several rarely-switched variants of one tool. */
+#brushGroup, #shapesGroup {
   @include collapsed-group;
   @include collapsed-group-left-flyout;
 }
@@ -605,10 +608,10 @@ html[data-sidebar-side='left'] .sidebarToggleBtn .panelIcon {
 /* Mobile app mode: all groups always collapse into flyouts, regardless of
    viewport height. Open/close is handled by App.setupToolGroupMenus. */
 html[data-mobile='true'] {
-  #moveGroup, #shapesGroup, #blurGroup { @include collapsed-group; }
+  #moveGroup, #blurGroup { @include collapsed-group; }
 
   &[data-sidebar-side='left'] {
-    #moveGroup, #shapesGroup, #blurGroup {
+    #moveGroup, #blurGroup {
       .toolSubgroup {
         right: auto;
         left: 100%;
@@ -716,14 +719,6 @@ html[data-mobile='true'] {
 .pattern-control-row .sliderValue {
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
-}
-
-/* Brush Mode 2x2 Grid */
-.brush-mode-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-  gap: 8px;
 }
 
 .radio-option {
@@ -839,16 +834,16 @@ html[data-mobile='true'] {
 
 /* Below ~180px the sidebar can be dragged down to its 160px floor
    (see UI.js setupResizer), and the remaining side-by-side radio groups
-   (Selection Mode, Layer Mode, Brush Mode, pattern colour-mode groups
-   already stack unconditionally above) start clipping their labels.
-   Stack everything generically at that width instead of hand-picking
-   more per-tool exceptions. */
+   (Selection Mode, Layer Mode, pattern colour-mode groups already stack
+   unconditionally above) start clipping their labels. Stack everything
+   generically at that width instead of hand-picking more per-tool
+   exceptions. */
 @container (max-width: 180px) {
-  .radio-group:not(.brush-mode-grid) {
+  .radio-group {
     flex-direction: column;
   }
 
-  .radio-group:not(.brush-mode-grid) > .radio-option {
+  .radio-group > .radio-option {
     flex: 1 1 auto;
     width: 100%;
   }

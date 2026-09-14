@@ -29,7 +29,6 @@ export class BrushModeManager {
    */
   setMode(mode) {
     if (this.app.self.mousedown) {
-      this.app.ui.updateBrushModeDisplay(this.currentMode);
       return;
     }
 
@@ -49,14 +48,22 @@ export class BrushModeManager {
   }
 
   /**
+   * Maps a tool name back to its brush mode. Inverse of _modeToToolName.
+   * @param {string} toolName - 'brush', 'pixel', 'flowPen', or 'ink'.
+   * @returns {string} - 'classic', 'pixel', 'fluid', or 'ink'.
+   */
+  static _toolNameToMode(toolName) {
+    return toolName === 'pixel' ? 'pixel' : toolName === 'flowPen' ? 'fluid' : toolName === 'ink' ? 'ink' : 'classic';
+  }
+
+  /**
    * Update mode when tool is switched.
    * @param {string} tool - Tool name.
    */
   updateModeFromTool(tool) {
     if (tool === 'brush' || tool === 'pixel' || tool === 'flowPen' || tool === 'ink') {
-      this.currentMode = tool === 'pixel' ? 'pixel' : tool === 'flowPen' ? 'fluid' : tool === 'ink' ? 'ink' : 'classic';
+      this.currentMode = BrushModeManager._toolNameToMode(tool);
       this.saveBrushMode();
-      this.app.ui.updateBrushModeDisplay(this.currentMode);
     }
   }
 

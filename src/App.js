@@ -77,8 +77,6 @@ import { normalizeBlendBakeMode } from '../shared/blendBakeMode.js';
 const TEXT_FONT_SETTINGS_STORAGE_KEY = 'topDrawTextFontSettings';
 const SHAPE_DRAW_MODE_STORAGE_KEY = 'topDrawShapeDrawMode';
 const NORMAL_TPS = 60;
-const LOW_POWER_TPS = 30;
-const LOW_POWER_FPS = 30;
 const BLUR_RADIUS_MAX = 10;
 const GLITCH_BLUR_RADIUS_MAX = 25;
 const WASM_INIT_TIMEOUT_MS = 15000;
@@ -89,7 +87,6 @@ const WASM_INIT_TIMEOUT_MS = 15000;
 // App.updateToolRailCollapseState.
 const TOOL_RAIL_COLLAPSE_STAGES = [
   'force-move-collapse',
-  'force-shapes-collapse',
   'force-blur-collapse',
   'force-compact',
   'force-compact-2'
@@ -601,7 +598,6 @@ export class DrawingApp {
         || this.currentRoomId === '_discovery' || this.isBackgroundWorkReduced(),
       onMismatch: (diff) => this._handleParityMismatch(diff),
       onOk: () => { this._lastParityOkAt = Date.now(); },
-      getPixelProbe: () => this.snapshotManager?.buildPixelParityProbe?.(),
     });
     this.wsClient.parityClient = this.parityClient;
     this.parityPanel = new ParityPanel(this);
@@ -831,7 +827,6 @@ export class DrawingApp {
     this.self.setTool(initialTool);
     this.toolManager.setTool(initialTool);
     this.ui.updateToolDisplay(initialTool, this.self);
-    this.ui.updateBrushModeDisplay(this.brushModeManager.getMode());
     this.ui.updateActiveLayerDisplay(this.self.activeLayer);
     this.ui.updateBlurToolState(this.self.activeLayer);
     this.ui.updateBlendModeForLayer(
@@ -1321,11 +1316,13 @@ export class DrawingApp {
     elements.zoomBtn.addEventListener('click', () => this.selectTool(this.getRenderedTool(elements.zoomBtn, 'zoom')));
     elements.rotateBtn.addEventListener('click', () => this.selectTool(this.getRenderedTool(elements.rotateBtn, 'rotate')));
     elements.selectBtn.addEventListener('click', () => this.selectTool('select'));
-    elements.brushBtn.addEventListener('click', () => {
-      this.selectTool(this.brushModeManager.getCurrentToolName());
-    });
-    elements.lineBtn.addEventListener('click', () => this.selectTool(this.getToolGroupActiveTool('shapesGroup', 'line')));
-    elements.rectangleBtn.addEventListener('click', () => this.selectTool(this.getRenderedTool(elements.rectangleBtn, 'rectangle')));
+    const setBrushMode = (tool) => this.brushModeManager.setMode(BrushModeManager._toolNameToMode(tool));
+    elements.brushBtn.addEventListener('click', () => setBrushMode(this.getToolGroupActiveTool('brushGroup', 'ink')));
+    elements.classicBrushBtn.addEventListener('click', () => setBrushMode(this.getRenderedTool(elements.classicBrushBtn, 'brush')));
+    elements.penBtn.addEventListener('click', () => setBrushMode(this.getRenderedTool(elements.penBtn, 'flowPen')));
+    elements.pixelBrushBtn.addEventListener('click', () => setBrushMode(this.getRenderedTool(elements.pixelBrushBtn, 'pixel')));
+    elements.rectangleBtn.addEventListener('click', () => this.selectTool(this.getToolGroupActiveTool('shapesGroup', 'rectangle')));
+    elements.lineBtn.addEventListener('click', () => this.selectTool(this.getRenderedTool(elements.lineBtn, 'line')));
     elements.circleBtn.addEventListener('click', () => this.selectTool(this.getRenderedTool(elements.circleBtn, 'circle')));
     elements.textBtn.addEventListener('click', () => this.selectTool('text'));
     elements.fillBtn.addEventListener('click', () => this.selectTool('fill'));
@@ -1565,14 +1562,6 @@ export class DrawingApp {
       radio.addEventListener('change', (e) => {
         this.eraseAllLayers = (e.target.value === 'all');
         this.inputBufferManager.queueBroadcast(() => this.wsClient.broadcastEraserModeChange(this.eraseAllLayers, this.self.tool));
-      });
-    });
-
-    // Brush mode radio buttons
-    const brushModeRadios = document.querySelectorAll('input[name="brushMode"]');
-    brushModeRadios.forEach(radio => {
-      radio.addEventListener('change', (e) => {
-        this.brushModeManager.setMode(e.target.value);
       });
     });
 
@@ -2640,6 +2629,8 @@ export class DrawingApp {
     this.TimeMachine = TimeMachine; // Expose for WebSocketClient recording
     this.recorder = recorder;       // Local replay tape. TimeMachine.recordAction → here.
     this.rollingTapeRecorder = rollingTapeRecorder; // Automatic 2-min DVR tape (History → Recent).
+    // _applyLowPowerPreference ran before this chunk landed.
+    this.rollingTapeRecorder.setLowPower?.(this.isLowPowerModeActive());
     this.recording = new RecordingController(this);
 
     // Periodic full-board stills (~60s) used to build a gallery time-lapse webm
@@ -2647,7 +2638,7 @@ export class DrawingApp {
     this.timelapseCapturer = new TimelapseCapturer(this.board, {
       shouldCapture: () => this.canUseGalleryTimelapse(),
     });
-    if (!this.isBackgroundWorkReduced()) this.timelapseCapturer.start();
+    if (!this.isBackgroundWorkReduced() && !this.isLowPowerModeActive()) this.timelapseCapturer.start();
 
     // Preferences were applied before the chunk landed, so re-apply them onto
     // the now-real recorders, then refresh the button that reflects tape state.
@@ -3964,15 +3955,32 @@ export class DrawingApp {
 
   _applyLowPowerPreference() {
     const lowPowerEnabled = this.isLowPowerModeActive();
-    const targetTickRate = lowPowerEnabled ? LOW_POWER_TPS : NORMAL_TPS;
-    const targetFPS = lowPowerEnabled ? LOW_POWER_FPS : 0;
-
-    if (this.inputBufferManager?.tickRate !== targetTickRate) {
-      this.inputBufferManager.setTickRate(targetTickRate);
+    // Input ticks and board redraws run at full rate even in low power: halving
+    // either made drawing feel sluggish for too little saving. Low power instead
+    // trims the local-only work below, and the flag still reaches the server via
+    // inputBufferManager.lowPowerMode (keeps weak clients off uploader duty).
+    if (this.inputBufferManager) {
+      if (this.inputBufferManager.tickRate !== NORMAL_TPS) {
+        this.inputBufferManager.setTickRate(NORMAL_TPS);
+      }
+      this.inputBufferManager.lowPowerMode = lowPowerEnabled;
     }
 
-    if (this.board?.targetFPS !== targetFPS) {
-      this.board.setTargetFPS(targetFPS);
+    if (this.board && this.board.targetFPS !== 0) {
+      this.board.setTargetFPS(0);
+    }
+
+    // Fan the resolved flag out to the local-only paths that trim themselves on
+    // weak hardware: selection ant pacing, the rolling tape's scrub thumbnails,
+    // and [data-low-power] CSS. None of them changes committed pixels, so
+    // clients still agree with each other.
+    if (this.board) this.board.lowPowerMode = lowPowerEnabled;
+    // Re-evaluate the zoom auto-show so a viewer it opened closes right away.
+    if (this.board) this.boardViewer?.setMainZoom(this.board.zoom);
+    this.rollingTapeRecorder?.setLowPower?.(lowPowerEnabled);
+    if (typeof document !== 'undefined') {
+      if (lowPowerEnabled) document.documentElement.dataset.lowPower = 'true';
+      else delete document.documentElement.dataset.lowPower;
     }
   }
 
@@ -3994,7 +4002,9 @@ export class DrawingApp {
    */
   _applyBackgroundWorkPreference() {
     if (!this.timelapseCapturer) return;
-    if (this.isBackgroundWorkReduced()) {
+    // Low power also pauses it: each capture is a full-board still plus a WebP
+    // encode every 6s, and it only exists to decorate a gallery upload.
+    if (this.isBackgroundWorkReduced() || this.isLowPowerModeActive()) {
       this.timelapseCapturer.stop();
     } else {
       this.timelapseCapturer.start();

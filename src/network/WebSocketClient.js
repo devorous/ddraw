@@ -1941,15 +1941,7 @@ export class WebSocketClient {
 
       case T.BOARD_SNAPSHOT_SAVE:
         // Private response to a BOARD_SNAPSHOT_GET request (not a broadcast restore)
-        if (data.snapshotId && data.snapshotProbe) {
-          window.app?.snapshotManager?.handleSnapshotProbeResponse?.({
-            snapshotId: data.snapshotId,
-            snapshotTs: data.snapshotTs,
-            snapshotIssuer: data.snapshotIssuer,
-            snapshotLayers: data.snapshotLayers,
-            snapshotSeq: data.snapshotSeq
-          });
-        } else if (data.snapshotId && !data.a) {
+        if (data.snapshotId && !data.a) {
           this.emit('board_snapshot_get_response', {
             snapshotId: data.snapshotId,
             snapshotTs: data.snapshotTs,
@@ -3195,8 +3187,8 @@ export class WebSocketClient {
     this.send({ t: T.CHECKPOINT_LIST });
   }
 
-  requestSnapshotGet(snapshotId, { snapshotProbe = false } = {}) {
-    this.send({ t: T.BOARD_SNAPSHOT_GET, snapshotId, snapshotProbe });
+  requestSnapshotGet(snapshotId) {
+    this.send({ t: T.BOARD_SNAPSHOT_GET, snapshotId });
   }
 
   /**
