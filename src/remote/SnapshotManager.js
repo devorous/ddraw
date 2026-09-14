@@ -194,16 +194,15 @@ export class SnapshotManager {
   }
 
   /**
-   * Broadcast a replay-rendered canvas as a room-wide board restore. The replay
-   * output is flattened into layer 0 and transparent layers are sent for the
-   * remaining groups, matching the existing local replay restore behavior while
-   * letting the server sequence and relay the mutation to collaborators.
-   * @param {HTMLCanvasElement} canvas
+   * Broadcast replay-rendered layers as a room-wide board restore, one image
+   * per layer so each layer keeps its own content. The server sequences and
+   * relays the mutation to collaborators.
+   * @param {HTMLCanvasElement[]} layerCanvases - One canvas per layer, in layer order
    * @returns {Promise<boolean>}
    */
-  async broadcastReplayCanvasRestore(canvas) {
-    if (!this.app.wsClient || !this.app.connected || !canvas) return false;
-    const encoded = await this._encodeFlattenedCanvasLayers(canvas);
+  async broadcastReplayLayerRestore(layerCanvases) {
+    if (!this.app.wsClient || !this.app.connected || !layerCanvases?.length) return false;
+    const encoded = await this._encodeLayerCanvases(layerCanvases);
     if (!encoded?.layers?.length) return false;
 
     this.app.wsClient.send({
@@ -214,16 +213,15 @@ export class SnapshotManager {
   }
 
   /**
-   * Broadcast a replay-rendered canvas as a room-wide region restore. Layer 0
-   * carries the flattened replay pixels and all upper layers carry transparent
-   * images so receivers clear the restored region on every layer.
-   * @param {HTMLCanvasElement} canvas
+   * Broadcast replay-rendered layers as a room-wide region restore. Receivers
+   * clear the region on every layer and refill it from that layer's image.
+   * @param {HTMLCanvasElement[]} layerCanvases - One canvas per layer, in layer order
    * @param {{x:number,y:number,width:number,height:number}} region
    * @returns {Promise<boolean>}
    */
-  async broadcastReplayRegionRestore(canvas, region) {
-    if (!this.app.wsClient || !this.app.connected || !canvas || !region) return false;
-    const encoded = await this._encodeFlattenedCanvasLayers(canvas);
+  async broadcastReplayLayerRegionRestore(layerCanvases, region) {
+    if (!this.app.wsClient || !this.app.connected || !layerCanvases?.length || !region) return false;
+    const encoded = await this._encodeLayerCanvases(layerCanvases);
     if (!encoded?.layers?.length) return false;
 
     const x = Math.max(0, Math.round(region.x));
@@ -413,24 +411,30 @@ export class SnapshotManager {
     });
   }
 
-  async _encodeFlattenedCanvasLayers(canvas) {
+  async _encodeLayerCanvases(layerCanvases) {
     const board = this.app.board;
-    const width = board?.getWidth?.() || canvas.width;
-    const height = board?.getHeight?.() || canvas.height;
+    const width = board?.getWidth?.() || layerCanvases[0]?.width;
+    const height = board?.getHeight?.() || layerCanvases[0]?.height;
     if (!width || !height) return null;
 
-    const flattened = document.createElement('canvas');
-    flattened.width = width;
-    flattened.height = height;
-    const ctx = flattened.getContext('2d');
-    ctx.clearRect(0, 0, width, height);
-    ctx.drawImage(canvas, 0, 0, width, height);
+    const scratch = document.createElement('canvas');
+    scratch.width = width;
+    scratch.height = height;
+    const ctx = scratch.getContext('2d', { willReadFrequently: true });
 
+    // One entry per live layer. A layer the source lacks is sent fully
+    // transparent rather than zero-length, so a region restore still clears it.
     const layerCount = Math.max(1, board?.layerManager?.getLayerCount?.() || board?.layerManager?.layerGroups?.length || 1);
-    const layers = [new Uint8Array(ctx.getImageData(0, 0, width, height).data.buffer)];
-    const transparentByteLength = width * height * 4;
-    for (let i = 1; i < layerCount; i++) {
-      layers.push(new Uint8Array(transparentByteLength));
+    const layers = [];
+    for (let i = 0; i < layerCount; i++) {
+      const source = layerCanvases[i];
+      if (!source) {
+        layers.push(new Uint8Array(width * height * 4));
+        continue;
+      }
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(source, 0, 0, width, height);
+      layers.push(new Uint8Array(ctx.getImageData(0, 0, width, height).data.buffer));
     }
 
     return await this._runWhenIdle(() => this._encodeSnapshotPixels({

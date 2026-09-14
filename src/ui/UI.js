@@ -1286,6 +1286,12 @@ menuBtn: document.getElementById('menuBtn'),
    */
   showCursor() {
     this.elements.selfCursor.style.display = 'block';
+    // A tool change while hidden left the shapes hidden (see updateToolDisplay);
+    // bring back the current tool's shape now that the cursor is shown.
+    if (this._selfCursorShapesStale) {
+      const user = window.app?.self;
+      if (user?.tool) this.updateToolDisplay(user.tool, user);
+    }
   }
 
   /**
@@ -1299,6 +1305,8 @@ menuBtn: document.getElementById('menuBtn'),
     if (this.elements.selfDot) {
       this.elements.selfDot.style.display = 'none';
     }
+    if (this.elements.selfHand) this.elements.selfHand.style.display = 'none';
+    if (this.elements.selfZoom) this.elements.selfZoom.style.display = 'none';
     this.elements.selfText.style.display = 'none';
     if (this.elements.selfPressureCircle) {
       this.elements.selfPressureCircle.style.display = 'none';
@@ -1974,6 +1982,13 @@ menuBtn: document.getElementById('menuBtn'),
         opacityContainer.style.display = 'none';
         break;
     }
+
+    // The cursor shapes are SVG siblings of .cursor.self, not its children, so
+    // hiding that container doesn't hide them. Picking a tool off the board
+    // (toolbar click) would otherwise pop the shape up at its last board
+    // position; keep it hidden until showCursor().
+    this._selfCursorShapesStale = this.elements.selfCursor?.style.display === 'none';
+    if (this._selfCursorShapesStale) this.hideCursor();
 
     if (cursorStyleSelect) {
       cursorStyleSelect.value = this.getCursorStyleForTool(tool, user);

@@ -12,6 +12,7 @@ import { suggestDdrawFilename } from '../../shared/ddrawCodec.js';
 import { DdrawEncodeWorkerClient } from '../replay/DdrawEncodeWorkerClient.js';
 import { TimeLapseExporter, compressedTapeDurationMs, suggestImageSequenceFilename, suggestVideoFilename } from '../replay/TimeLapseExporter.js';
 import { isTauriDesktop, saveBytesViaNativeDialog, revealPathInDir } from '../platform/desktop.js';
+import { applyRegionRestoreLayers } from '../handlers/SnapshotHandlers.js';
 
 const SEEK_TELEMETRY_LOG_INTERVAL_MS = 1500;
 const LOCAL_REVERSE_SCRUB_FRAME_MS = 500;
@@ -1328,9 +1329,12 @@ class TimeMachineState {
 
   async restoreLocalToCurrentState() {
     if (this._source !== 'local' || !this.isReviewing) return;
-    const src = this._replayEngine?.outputCanvas;
     const liveBoard = this._board;
-    if (!src || !liveBoard) return;
+    if (!liveBoard) return;
+    // One canvas per replay layer, so each live layer is restored on its own
+    // instead of the flattened replay output collapsing into layer 0.
+    const layers = this._replayEngine?.captureLayerCanvases?.();
+    if (!layers?.length) return;
 
     // Undo point in the viewed recording's time domain, captured before
     // catchUp() resets the playhead.
@@ -1343,14 +1347,14 @@ class TimeMachineState {
     // exist on the board, so reopening History after an undo showed the whole
     // undone segment as if the undo never happened. When connected the restore
     // still broadcasts as a BOARD_SNAPSHOT_RESTORE so collaborators follow.
-    if (window.app?.connected && window.app?.snapshotManager?.broadcastReplayCanvasRestore) {
+    if (window.app?.connected && window.app?.snapshotManager?.broadcastReplayLayerRestore) {
       // The server echoes the sequenced restore back to us without a user id
       // (dodging the recorders' commit self-echo dedup). The truncated tapes
       // already equal the restored state, so swallow that echo instead of
       // re-appending a full board image to the freshly cut tapes.
       window.app.rollingTapeRecorder?.suppressNextInbound?.(T.BOARD_SNAPSHOT_RESTORE);
       window.app.recorder?.suppressNextInbound?.(T.BOARD_SNAPSHOT_RESTORE);
-      const sent = await window.app.snapshotManager.broadcastReplayCanvasRestore(src);
+      const sent = await window.app.snapshotManager.broadcastReplayLayerRestore(layers);
       if (sent) {
         this._truncateLiveTapesAfterUndo(cutTs);
         this.catchUp();
@@ -1359,9 +1363,16 @@ class TimeMachineState {
     }
 
     liveBoard.clear?.();
-    const layer0 = liveBoard.layerManager?.layerGroups?.[0];
-    if (layer0?.flatCanvas) {
-      liveBoard.layerManager.restoreLayerFromSnapshot(0, src);
+    const lm = liveBoard.layerManager;
+    const count = Math.min(layers.length, lm?.layerGroups?.length || 0);
+    for (let i = 0; i < count; i++) {
+      const src = layers[i];
+      // Skip transparent layers rather than baking them, as Board.restoreSnapshot
+      // does, so empty layers aren't marked occupied.
+      const { data } = src.getContext('2d').getImageData(0, 0, src.width, src.height);
+      if (!liveBoard._snapshotLayerHasPixels(new Uint8Array(data.buffer))) continue;
+      if (lm.layerGroups[i].flatCanvas) lm.restoreLayerFromSnapshot(i, src);
+      else lm.addToBaseBin(i, src, 0, 0);
     }
     liveBoard.markCompositeFull?.();
     liveBoard.compositeAllLayers?.();
@@ -1415,28 +1426,28 @@ class TimeMachineState {
    * live board as-is. `region` is in board pixels ({x, y, width, height}); null
    * falls back to the full-board restore.
    *
-   * Like the full version this is a single-user "rewind my own canvas" op — it
-   * collapses to layer 0 and the server is unaware until the next stroke.
+   * Each layer's region is reverted independently. When connected it
+   * broadcasts as a region restore; offline it only touches this board.
    * @param {{x:number,y:number,width:number,height:number}|null} region
    */
   async restoreLocalRegionToCurrentState(region) {
     if (!region) return await this.restoreLocalToCurrentState();
     if (this._source !== 'local' || !this.isReviewing) return;
-    const replaySrc = this._replayEngine?.outputCanvas;
     const liveBoard = this._board;
     const lm = liveBoard?.layerManager;
-    if (!replaySrc || !liveBoard || !lm?.getCompositedCanvas) return;
+    if (!liveBoard || !lm) return;
+    const layers = this._replayEngine?.captureLayerCanvases?.();
+    if (!layers?.length) return;
 
-    const current = lm.getCompositedCanvas();
-    const w = current.width, h = current.height;
+    const [h, w] = liveBoard.dimensions;
     const rx = Math.max(0, Math.round(region.x));
     const ry = Math.max(0, Math.round(region.y));
     const rw = Math.min(w - rx, Math.round(region.width));
     const rh = Math.min(h - ry, Math.round(region.height));
     if (rw <= 0 || rh <= 0) return;
 
-    if (window.app?.connected && window.app?.snapshotManager?.broadcastReplayRegionRestore) {
-      const sent = await window.app.snapshotManager.broadcastReplayRegionRestore(replaySrc, {
+    if (window.app?.connected && window.app?.snapshotManager?.broadcastReplayLayerRegionRestore) {
+      const sent = await window.app.snapshotManager.broadcastReplayLayerRegionRestore(layers, {
         x: rx,
         y: ry,
         width: rw,
@@ -1448,20 +1459,11 @@ class TimeMachineState {
       }
     }
 
-    // Build current board + the region replaced by the replayed pixels.
-    const merged = document.createElement('canvas');
-    merged.width = w;
-    merged.height = h;
-    const mctx = merged.getContext('2d');
-    mctx.drawImage(current, 0, 0);
-    mctx.clearRect(rx, ry, rw, rh);
-    mctx.drawImage(replaySrc, rx, ry, rw, rh, rx, ry, rw, rh);
-
-    liveBoard.clear?.();
-    const layer0 = lm.layerGroups?.[0];
-    if (layer0?.flatCanvas) lm.restoreLayerFromSnapshot(0, merged);
-    liveBoard.markCompositeFull?.();
-    liveBoard.compositeAllLayers?.();
+    // A live layer the replay lacks gets a blank source, so its region is
+    // still cleared like every other layer's.
+    let blank = null;
+    const layerSource = (i) => layers[i] || (blank ??= Object.assign(document.createElement('canvas'), { width: w, height: h }));
+    await applyRegionRestoreLayers(liveBoard, lm.layerGroups.length, layerSource, false, { sx: rx, sy: ry, sw: rw, sh: rh }, []);
     // Offline/no-broadcast path only. Like the full-board restoreLocalToCurrentState,
     // we do NOT reset the rolling tape here — resetting would discard the entire
     // replay history. When connected, the region restore is broadcast, recorded,

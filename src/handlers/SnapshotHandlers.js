@@ -126,6 +126,57 @@ export function setupSnapshotHandlers(wsClient, app) {
  * @param {number[]} lassoFlat - Flat [x0,y0,x1,y1,...] lasso points
  */
 export async function applyRegionRestore(board, layerDatas, isLasso, rect, lassoFlat) {
+  await applyRegionRestoreLayers(
+    board,
+    layerDatas.length,
+    (i) => _decodeQoiLayerCanvas(layerDatas[i]),
+    isLasso,
+    rect,
+    lassoFlat
+  );
+  board.app?.ui?.showToast('A region was restored from a snapshot', 3000);
+}
+
+/**
+ * Decodes one QOI layer blob into a canvas, or null if it's empty/invalid.
+ * @param {Uint8Array} qoi
+ * @returns {HTMLCanvasElement|null}
+ */
+function _decodeQoiLayerCanvas(qoi) {
+  if (!qoi || qoi.length === 0) return null;
+
+  let pixels;
+  try {
+    pixels = wasm.qoi_decode(qoi);
+    if (!pixels || pixels.length === 0) return null;
+  } catch (e) { return null; }
+
+  const dimensions = readQoiDimensions(qoi);
+  if (!dimensions || pixels.length !== dimensions.width * dimensions.height * 4) return null;
+
+  const snapshotCanvas = document.createElement('canvas');
+  snapshotCanvas.width = dimensions.width; snapshotCanvas.height = dimensions.height;
+  snapshotCanvas.getContext('2d').putImageData(
+    new ImageData(
+      new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength),
+      dimensions.width,
+      dimensions.height
+    ), 0, 0
+  );
+  return snapshotCanvas;
+}
+
+/**
+ * Restores a region on each layer independently from per-layer source canvases.
+ * Layers whose source is null are left untouched.
+ * @param {Board} board
+ * @param {number} layerCount - Number of layer sources
+ * @param {(index: number) => HTMLCanvasElement|null} getLayerCanvas - Source for layer `index`
+ * @param {boolean} isLasso
+ * @param {{sx,sy,sw,sh}} rect - Rectangle selection coords (board space)
+ * @param {number[]} lassoFlat - Flat [x0,y0,x1,y1,...] lasso points
+ */
+export async function applyRegionRestoreLayers(board, layerCount, getLayerCanvas, isLasso, rect, lassoFlat) {
   const lm = board.layerManager;
   const [height, width] = board.dimensions;
 
@@ -146,28 +197,9 @@ export async function applyRegionRestore(board, layerDatas, isLasso, rect, lasso
     // stall this whole restore until the tab regains focus.
     await new Promise(resolve => setTimeout(resolve, 0));
 
-    for (let i = 0; i < layerDatas.length; i++) {
-      const qoi = layerDatas[i];
-      if (!qoi || qoi.length === 0) continue;
-
-      let pixels;
-      try {
-        pixels = wasm.qoi_decode(qoi);
-        if (!pixels || pixels.length === 0) continue;
-      } catch (e) { continue; }
-
-      const dimensions = readQoiDimensions(qoi);
-      if (!dimensions || pixels.length !== dimensions.width * dimensions.height * 4) continue;
-
-      const snapshotCanvas = document.createElement('canvas');
-      snapshotCanvas.width = dimensions.width; snapshotCanvas.height = dimensions.height;
-      snapshotCanvas.getContext('2d').putImageData(
-        new ImageData(
-          new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength),
-          dimensions.width,
-          dimensions.height
-        ), 0, 0
-      );
+    for (let i = 0; i < layerCount; i++) {
+      const snapshotCanvas = getLayerCanvas(i);
+      if (!snapshotCanvas) continue;
 
       const group = lm?.layerGroups[i];
       if (!group) continue;
@@ -232,7 +264,6 @@ export async function applyRegionRestore(board, layerDatas, isLasso, rect, lasso
 
     board.markCompositeFull();
     board.compositeAllLayers();
-    board.app?.ui?.showToast('A region was restored from a snapshot', 3000);
   } finally {
     if (interactionBlockId) {
       board.removeInteractionBlock(interactionBlockId);

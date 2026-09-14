@@ -3682,11 +3682,36 @@ export class ReplayEngine {
   }
 
   /**
+   * Render each replay layer onto its own board-sized canvas, in layer order.
+   * Restore-to-live (TimeMachine.restoreLocal*ToCurrentState) uses these so
+   * every layer is restored independently — copying the flattened outputCanvas
+   * collapsed the whole board into layer 0. Artwork only: no selection
+   * overlay, topCanvas previews or cursors.
+   * @returns {HTMLCanvasElement[]}
+   */
+  captureLayerCanvases() {
+    const lm = this._replayBoard?.layerManager;
+    if (!lm) return [];
+    const count = lm.getLayerCount?.() ?? lm.layerGroups.length;
+    const canvases = [];
+    for (let i = 0; i < count; i++) {
+      const canvas = document.createElement('canvas');
+      canvas.width = this.width;
+      canvas.height = this.height;
+      // ignoreVisibility also keeps this side render from consuming the
+      // replay's pending composite flag.
+      lm.compositeLayerRange(canvas.getContext('2d'), i, i + 1, null, null, { ignoreVisibility: true });
+      canvases.push(canvas);
+    }
+    return canvases;
+  }
+
+  /**
    * Draw the recorded users' cursors (ring / crosshair / square + name label)
    * onto an arbitrary context — used by the live mini/full replay to overlay
    * cursors on the display canvas. Deliberately NOT baked into outputCanvas:
-   * that canvas is copied verbatim into real board pixels by
-   * TimeMachine.restoreLocalToCurrentState, so cursors must stay out of it.
+   * the video/frames exporters want artwork-only output, so cursors must stay
+   * out of it.
    *
    * Cursors idle past REPLAY_CURSOR_IDLE_MS relative to the playhead are
    * hidden, matching the live REMOTE_CURSOR_IDLE_MS behavior.
@@ -3711,8 +3736,7 @@ export class ReplayEngine {
    * live Board.renderMirrorRegions overlay. Regions appear/move/vanish as the
    * recorded MIRROR_REGION / MIR / SETTINGS messages replay.
    *
-   * Like drawCursors, deliberately NOT baked into outputCanvas: that canvas is
-   * copied verbatim into real board pixels by restore-to-live, and the video/
+   * Like drawCursors, deliberately NOT baked into outputCanvas: the video/
    * frames exporters want artwork-only output — so only the live viewer
    * (TimeMachine._paintReplayFrame) calls this.
    *
