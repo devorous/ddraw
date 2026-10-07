@@ -8,23 +8,23 @@ A high-performance, real-time multiplayer drawing application. Designed for seam
 ![Vite](https://img.shields.io/badge/Vite-5.0-646CFF)
 ![Tauri](https://img.shields.io/badge/Tauri-2.0-24C8DB)
 
-## ✨ Core Features
+##  Core Features
 
-- **🚀 Real-time Low Latency** - Collaborative drawing powered by WebSockets and Binary Protocol Buffer Compression.
-- **🎨 Professional Ink Engine** - Smooth, pressure-sensitive calligraphic strokes via the `perfect-freehand` library.
-- **🛠️ Specialized Tools**
+- ** Real-time Low Latency** - Collaborative drawing powered by WebSockets and Binary Protocol Buffer Compression.
+- ** Professional Ink Engine** - Smooth, pressure-sensitive calligraphic strokes via the `perfect-freehand` library.
+- ** Specialized Tools**
   - **Brush & Flow Pen:** Customizable stamping and smoothing.
   - **Ink Tool:** Tapered, high-quality vector-like strokes.
   - **Selection + Homography:** Perspective transformations using Delaunay triangulation.
   - **Shape Tools:** Rectangles, circles, and straight lines.
   - **Image Brushes:** Support for GIMP brushes (.gbr/.gih) and standard image formats.
-- **🏗️ Multi-Layer Support** - Photoshop-style layering with real-time blending modes.
-- **💬 Direct Messaging** - A dedicated E2EE-ready messenger service for private 1-1 communication.
-- **🕒 Time Machine** - Replay engine to view drawing history.
-- **🦀 WASM Acceleration** - Rust modules for computationally expensive operations like Stackblur and brush hardness ramps.
-- **🖥️ Native Desktop App** - Windows support via Tauri 2.0 with a custom system tray and optimized performance.
+- ** Multi-Layer Support** - Photoshop-style layering with real-time blending modes.
+- ** Direct Messaging** - A dedicated E2EE-ready messenger service for private 1-1 communication.
+- ** Time Machine** - Replay engine to view drawing history.
+- ** WASM Acceleration** - Rust modules for computationally expensive operations like Stackblur and brush hardness ramps.
+- ** Native Desktop App** - Windows support via Tauri 2.0 with a custom system tray and optimized performance.
 
-## 🛠️ Technical Architecture
+## Technical Architecture
 
 ### Drawing Engine (Vanilla JS)
 The core canvas logic is decoupled from the UI framework for maximum performance. It uses a custom **TileGrid** system to track dirty regions, minimizing compositing overhead during large-scale collaborative sessions.
@@ -41,7 +41,7 @@ A robust sync coordinator handles late-joiners by electing an existing user as a
 - **Dirty Rect Tracking:** Avoids re-rendering the entire canvas by only updating changed tiles.
 - **Tauri Core:** Provides a lightweight, secure native wrapper for the desktop application.
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -75,7 +75,7 @@ A robust sync coordinator handles late-joiners by electing an existing user as a
    npm run dev
    ```
 
-## 🖥️ Desktop Application (Tauri)
+## Desktop Application (Tauri)
 
 Ddraw can be run as a native Windows application using Tauri 2.0.
 
@@ -94,7 +94,7 @@ The resulting installers will be located in `src-tauri/target/release/bundle/`.
 
 > **Note:** The production build uses the configuration in `.env.production` to connect to your hosted backend (e.g., Koyeb).
 
-## 📂 Project Structure
+## Project Structure
 
 - `src/canvas/` - The core drawing engine and TileGrid system.
 - `src/tools/` - Implementation of various drawing tools.
@@ -105,7 +105,7 @@ The resulting installers will be located in `src-tauri/target/release/bundle/`.
 - `server/` - Node.js servers (WebSocket, Auth, Messenger).
 - `public/` - Static assets and ProtoBuf definitions.
 
-## 📜 Scripts
+## Scripts
 
 | Command | Action |
 |---------|--------|
@@ -117,6 +117,6 @@ The resulting installers will be located in `src-tauri/target/release/bundle/`.
 | `npm run server` | Start only the primary WebSocket/Room server |
 | `npm run messenger` | Start the Direct Messaging service |
 
-## ⚖️ License
+## License
 
 Distributed under the MIT License. See `LICENSE` for more information.
