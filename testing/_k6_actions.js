@@ -11,7 +11,35 @@
  * ordered tests cycle every tool through the full set sequentially.
  */
 
-import { buildMsg } from './_k6_proto.js';
+import { buildMsg as buildBaseMsg } from './_k6_proto.js';
+import { encodePressureTargets, PRESSURE_TARGET_ALL } from '../shared/pressureTargets.js';
+
+// ─── Opt-in pressure-opacity traffic ────────────────────────────────────────
+// PRESSURE_OPACITY=1 makes bots send pressure targets (size + opacity, what the
+// real client sends with opacity ticked) on CPT and on every MD, so receivers
+// build the pressure opacity mask. Off by default: every existing feed keeps
+// sending no `pt`, i.e. the size-only default.
+export const PRESSURE_OPACITY =
+  typeof __ENV !== 'undefined' && __ENV.PRESSURE_OPACITY === '1';
+
+/** `pt` (proto field 215, varint) appended after the base fields; _k6_proto has no encoder for it. */
+function withPressureTargets(buf, targets) {
+  const value = encodePressureTargets(targets);
+  const tag = (215 << 3) | 0;                       // 1720 -> two varint bytes
+  const extra = [(tag & 0x7f) | 0x80, tag >> 7, value];
+  const out = new Uint8Array(buf.byteLength + extra.length);
+  out.set(new Uint8Array(buf), 0);
+  out.set(extra, buf.byteLength);
+  return out.buffer;
+}
+
+/** buildMsg, plus `pt` when `fields.pt` (raw PRESSURE_TARGET_* bits) is set. */
+function buildMsg(fields) {
+  if (fields.pt === undefined) return buildBaseMsg(fields);
+  const rest = Object.assign({}, fields);
+  delete rest.pt;
+  return withPressureTargets(buildBaseMsg(rest), fields.pt);
+}
 
 // ─── Wire-level constants (mirror proto T enum) ─────────────────────────────
 
@@ -22,6 +50,7 @@ export const T = {
   SEL_LIFT: 30, SEL_MOVE: 31, SEL_COMMIT: 32, SEL_DELETE: 33,
   SEL_FILL: 34, SEL_STAMP: 35, SEL_CANCEL: 36, SEL_FLIP: 67,
   SEL_PENDING: 68, SEL_MASK: 93,
+  CPT: 157,
   CHD: 45, CBR: 57, CL: 58, CBM: 59,
   UNDO: 60, REDO: 61,
   CTHN: 71, CSIM: 72, FILL: 73,
@@ -46,6 +75,9 @@ export const TOOL_NAMES = Object.fromEntries(
 
 /** Every drawable tool in id order. */
 export const ALL_TOOLS = Object.values(Tool);
+
+/** Tools that offer the pressure-targets choice (shared/pressureTargets.js). */
+const PRESSURE_TOOLS = new Set([Tool.BRUSH, Tool.PEN, Tool.INK, Tool.CIRCLE_BLUR, Tool.ERASE, Tool.IMAGE_BRUSH]);
 
 export function isFillTargetTool(tool) {
   return tool === Tool.BRUSH ||
@@ -287,6 +319,9 @@ export function configureTool(socket, u, tool, opts = {}) {
   socket.sendBinary(buildMsg({ t: T.CHD, u, hd: hardness }));
   socket.sendBinary(buildMsg({ t: T.CSM, u, sm: smoothing }));
   socket.sendBinary(buildMsg({ t: T.CSP, u, sp: spacing }));
+  if (PRESSURE_OPACITY && PRESSURE_TOOLS.has(tool)) {
+    socket.sendBinary(buildMsg({ t: T.CPT, u, pt: opts.pressureTargets ?? PRESSURE_TARGET_ALL }));
+  }
 
   if (opts.activeLayer !== undefined) {
     socket.sendBinary(buildMsg({ t: T.CL, u, ly: opts.activeLayer }));
@@ -428,7 +463,34 @@ export function sendDown(socket, u, x, y, meta = {}) {
   if (meta.blendMode) msg.bm = meta.blendMode;
   if (meta.blendBakeMode) msg.bbm = meta.blendBakeMode === 'background' ? 'background' : 'existing';
   if (meta.confettiData) msg.g = meta.confettiData;
+  // The real client stamps the stroke's pressure targets onto every MD.
+  const targets = meta.pressureTargets ?? (PRESSURE_OPACITY ? PRESSURE_TARGET_ALL : undefined);
+  if (targets !== undefined) msg.pt = targets;
   socket.sendBinary(buildMsg(msg));
+}
+
+/**
+ * A self-overlapping scribble for the pressure-opacity bots: a loop whose
+ * radius wanders, so every lap crosses the previous ones, with pressure
+ * swinging 0.2-1.0 along the stroke. Points are ~`step` px apart.
+ * `radii` are per-point pressure x 255, the `rs` that ink / pen strokes carry.
+ *
+ * @returns {{points: number[], radii: number[]}}
+ */
+export function makeScribble(rng, cx, cy, R, n, step = 8) {
+  const points = [], radii = [];
+  const phase = rng() * Math.PI * 2, pPhase = rng() * Math.PI * 2;
+  const da = step / Math.max(R * 0.7, 1);
+  const pCycles = 1.5 + rng() * 2;
+  for (let i = 0; i < n; i++) {
+    const a = phase + i * da;
+    const r = R * (0.55 + 0.45 * Math.sin(i * da * 0.37 + phase));
+    points.push(cx + r * Math.cos(a) + (rng() - 0.5) * 2,
+                cy + r * Math.sin(a) + (rng() - 0.5) * 2);
+    const p = 0.6 + 0.4 * Math.sin(pPhase + (i / n) * pCycles * Math.PI * 2);
+    radii.push(Math.round(p * 255));
+  }
+  return { points, radii };
 }
 
 export function sendUp(socket, u) {

@@ -7,11 +7,18 @@
  * pressure into a PressureMask (alpha = pressure) and composite through
  * compositePressureStroke(), which scales the coverage by the mask.
  *
- * Mask stamps replace what is under them instead of accumulating, so a pixel
- * takes the pressure of the most recent stamp that reached it — overlapping
- * stamps don't build up, the same no-stacking rule the offscreen canvas exists
- * for. The sender and every receiver stamp the same points in the same order
- * from the same wire values, so the masks — and the committed pixels — match.
+ * By default a pixel takes the strongest pressure any stamp reached ('max'), so
+ * a light pass crossing a dark one doesn't lighten it, and overlaps never
+ * darken beyond the strongest pass, the same no-stacking rule the offscreen
+ * canvas exists for. The sender and every receiver stamp the same points in the
+ * same order from the same wire values, so the masks, and the committed pixels,
+ * match.
+ *
+ * `localStorage.ddrawMaskMode` = 'replace' | 'stack' swaps that rule for
+ * comparison (see PressureMask): 'replace' is the old behaviour, where the most
+ * recent stamp wins; 'stack' is experimental and slow. Unset or anything else
+ * gives 'max'. Each client renders strokes in its own mode, so mixed versions or
+ * a set flag can make pixels differ between users; the flag is a dev tool only.
  */
 
 import {
@@ -95,28 +102,153 @@ export function inkOutlinePoints(points, targets) {
   return points.map(([x, y]) => [x, y, 1]);
 }
 
+/** Accumulation modes: see PressureMask. 'max' is the default; 'replace' is the old behaviour. */
+const MASK_MODES = ['replace', 'max', 'stack'];
+const DEFAULT_MASK_MODE = 'max';
+
+/**
+ * Which accumulation mode a new stroke's mask uses. `globalThis.__ddrawMaskMode`
+ * (bench override) wins over `localStorage.ddrawMaskMode`; anything else is 'max'.
+ * @returns {'replace'|'max'|'stack'}
+ */
+export function pressureMaskMode() {
+  let mode = globalThis.__ddrawMaskMode;
+  if (!mode) {
+    try { mode = globalThis.localStorage?.getItem('ddrawMaskMode'); } catch { mode = null; }
+  }
+  if (!MASK_MODES.includes(mode)) return DEFAULT_MASK_MODE;
+  // 'stack' folds through ctx.filter; without it fall back to the old behaviour.
+  return mode === 'stack' && !canvasFilterWorks() ? 'replace' : mode;
+}
+
+const colorMatrixFilter = (values) => 'url("data:image/svg+xml;utf8,' + encodeURIComponent(
+  `<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' color-interpolation-filters='sRGB'>` +
+  `<feColorMatrix type='matrix' values='${values}'/></filter></svg>`) + '#f")';
+/** Opaque grey whose red is the source alpha: lets 'lighten' (per-channel max) do an alpha max. */
+const ALPHA_TO_GREY = colorMatrixFilter('0 0 0 1 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 1');
+/** The reverse: black with alpha = red. */
+const GREY_TO_ALPHA = colorMatrixFilter('0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  1 0 0 0 0');
+
+let canvasFilterOk = null;
+
+/**
+ * Whether this browser applies `ctx.filter` on canvas (Safari ignores it). Probed once by
+ * drawing a grey pixel through GREY_TO_ALPHA. `globalThis.__ddrawMaskNoFilter` (bench) forces false.
+ * @returns {boolean}
+ */
+function canvasFilterWorks() {
+  if (globalThis.__ddrawMaskNoFilter) return false;
+  if (canvasFilterOk !== null) return canvasFilterOk;
+  try {
+    const src = newEntry(1, 1);
+    src.ctx.fillStyle = 'rgb(128, 128, 128)';
+    src.ctx.fillRect(0, 0, 1, 1);
+    const dst = newEntry(1, 1);
+    copyRect(dst, src.canvas, { x: 0, y: 0, w: 1, h: 1 }, GREY_TO_ALPHA);
+    canvasFilterOk = Math.abs(dst.ctx.getImageData(0, 0, 1, 1).data[3] - 128) <= 3;
+  } catch {
+    canvasFilterOk = false;
+  }
+  return canvasFilterOk;
+}
+
+/** GREY_TO_ALPHA without ctx.filter: new alpha = the grey's red, rgb 0. */
+function greyToAlphaRect(entry, src, r) {
+  const grey = src.getContext('2d').getImageData(r.x, r.y, r.w, r.h);
+  const px = grey.data;
+  for (let i = 0; i < px.length; i += 4) {
+    px[i + 3] = px[i];
+    px[i] = 0;
+    px[i + 1] = 0;
+    px[i + 2] = 0;
+  }
+  entry.ctx.putImageData(grey, r.x, r.y);
+}
+
+/** Extra reach of the footprint/dirty boxes past a stamp's radius (the footprint is dilated so it covers the mask's antialiased rim). */
+const STAMP_PAD = 2;
+
+function newEntry(width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  return { canvas, ctx: canvas.getContext('2d') };
+}
+
+/** Clears a canvas-local rect and draws the same rect of `src` over it, optionally through a filter. */
+function copyRect(entry, src, r, filter) {
+  const ctx = entry.ctx;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.clearRect(r.x, r.y, r.w, r.h);
+  if (filter) ctx.filter = filter;
+  ctx.drawImage(src, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
+  ctx.restore();
+}
+
+/** Draws a canvas-local rect of `src` onto `entry` with a composite operation. */
+function blendRect(entry, src, r, operation) {
+  const ctx = entry.ctx;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = operation;
+  ctx.drawImage(src, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
+  ctx.restore();
+}
+
 /**
  * A stroke's pressure, as alpha, in a board-space canvas windowed to the
  * stroke and grown as it goes.
+ *
+ * How overlapping stamps combine is selectable (pressureMaskMode):
+ *  - 'replace': the old behaviour. A stamp overwrites what is under it, so a
+ *    pixel takes the pressure of the most recent stamp that reached it.
+ *  - 'max' (default): a stamp never lowers a pixel. Kept as an opaque grey canvas (grey =
+ *    pressure) so 'lighten' can take the per-channel max, which 2D canvas can't
+ *    do on alpha; `canvas` converts it to alpha lazily.
+ *  - 'stack': self-overlap darkens (a + b(1 - a)), but not against the stroke's
+ *    own neighbours. Stamps go to a max-mode grey canvas `cur` for a chunk (~2
+ *    radii of path); a closed chunk folds into the settled canvas, taking the max where
+ *    it overlaps the previous chunk's footprint and stacking elsewhere.
+ *    `canvas` is settled plus the open chunk folded in, rebuilt lazily.
  */
 export class PressureMask {
   constructor() {
-    /** @type {HTMLCanvasElement|null} */
-    this.canvas = null;
-    /** @type {CanvasRenderingContext2D|null} */
-    this.ctx = null;
     /** Board position of the canvas's (0, 0). */
     this.origin = { x: 0, y: 0 };
     /** @type {{x:number, y:number, radius:number, pressure:number}|null} */
     this.last = null;
+    this._clear();
+  }
+
+  /** @returns {HTMLCanvasElement|null} The mask as alpha, ready for compositePressureStroke. */
+  get canvas() {
+    if (!this._main) return null;
+    if (this._mode === 'replace') return this._main.canvas;
+    if (!this._view || this._dirty) this._buildView();
+    return this._view.canvas;
   }
 
   /** Drops the mask for the next stroke. */
   reset() {
-    this.canvas = null;
-    this.ctx = null;
     this.origin = { x: 0, y: 0 };
     this.last = null;
+    this._clear();
+  }
+
+  _clear() {
+    this._mode = DEFAULT_MASK_MODE;
+    this._main = null;   // replace: the mask; max: grey; stack: settled
+    this._cur = null;    // stack: open chunk (grey, max semantics)
+    this._fcur = null;   // stack: open chunk's solid footprint
+    this._fprev = null;  // stack: previous chunk's solid footprint
+    this._hasPrev = false;
+    this._chunkLen = 0;
+    this._chunkBox = null;
+    this._view = null;
+    this._dirty = null;  // board box changed since the view was last built
+    this._scratchSet = null;
   }
 
   /**
@@ -130,6 +262,7 @@ export class PressureMask {
     const r = Math.max(1, radius);
     const p = Math.max(0, Math.min(1, pressure));
     const last = this.last;
+    if (!this._main) this._mode = pressureMaskMode();
 
     this._ensure(
       Math.min(x - r, last ? last.x - last.radius : Infinity),
@@ -138,11 +271,8 @@ export class PressureMask {
       Math.max(y + r, last ? last.y + last.radius : -Infinity)
     );
 
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.translate(-this.origin.x, -this.origin.y);
     if (!last) {
-      this._stamp(ctx, x, y, r, p);
+      this._put(x, y, r, p, 0);
     } else {
       const dx = x - last.x;
       const dy = y - last.y;
@@ -151,22 +281,67 @@ export class PressureMask {
       const steps = Math.max(1, Math.ceil(distance / spacing));
       for (let i = 1; i <= steps; i++) {
         const t = i / steps;
-        this._stamp(
-          ctx,
+        this._put(
           last.x + dx * t,
           last.y + dy * t,
           last.radius + (r - last.radius) * t,
-          last.pressure + (p - last.pressure) * t
+          last.pressure + (p - last.pressure) * t,
+          distance / steps
         );
       }
     }
-    ctx.restore();
 
     this.last = { x, y, radius: r, pressure: p };
   }
 
+  /** One stamp, routed by mode. @private */
+  _put(x, y, radius, pressure, stepLength) {
+    const ox = this.origin.x;
+    const oy = this.origin.y;
+    const pad = radius + STAMP_PAD;
+    const d = this._dirty;
+    if (d) {
+      d.x0 = Math.min(d.x0, x - pad); d.y0 = Math.min(d.y0, y - pad);
+      d.x1 = Math.max(d.x1, x + pad); d.y1 = Math.max(d.y1, y + pad);
+    } else if (this._view) {
+      this._dirty = { x0: x - pad, y0: y - pad, x1: x + pad, y1: y + pad };
+    }
+
+    const draw = (entry, fn) => {
+      const ctx = entry.ctx;
+      ctx.save();
+      ctx.translate(-ox, -oy);
+      fn(ctx);
+      ctx.restore();
+    };
+
+    if (this._mode === 'replace') {
+      draw(this._main, (ctx) => this._stamp(ctx, x, y, radius, pressure));
+    } else if (this._mode === 'max') {
+      draw(this._main, (ctx) => this._stampMax(ctx, x, y, radius, pressure));
+    } else {
+      draw(this._cur, (ctx) => this._stampMax(ctx, x, y, radius, pressure));
+      draw(this._fcur, (ctx) => {
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.arc(x, y, radius + STAMP_PAD, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      const b = this._chunkBox;
+      if (b) {
+        b.x0 = Math.min(b.x0, x - pad); b.y0 = Math.min(b.y0, y - pad);
+        b.x1 = Math.max(b.x1, x + pad); b.y1 = Math.max(b.y1, y + pad);
+      } else {
+        this._chunkBox = { x0: x - pad, y0: y - pad, x1: x + pad, y1: y + pad };
+      }
+      this._chunkLen += stepLength;
+      if (this._chunkLen >= radius * 2) this._closeChunk();
+    }
+  }
+
   /**
-   * Replaces the mask under a circle with `pressure`. The refill ADDS
+   * 'replace' mode (the old behaviour; 'max' is the default): replaces the mask
+   * under a circle with `pressure`. The refill ADDS
    * (`lighter`) rather than drawing over: an edge pixel the circle covers by c
    * keeps (1 - c) of its old value after destination-out, and adding
    * pressure * c lands exactly on the lerp between them. `source-over` would
@@ -189,11 +364,116 @@ export class PressureMask {
   }
 
   /**
+   * Raises the grey under a circle to `pressure` and never lowers it. On the
+   * opaque grey 'lighten' blends an edge pixel as (1 - c) * old + c * max(old, grey).
+   * @private
+   */
+  _stampMax(ctx, x, y, radius, pressure) {
+    if (pressure <= 0) return;
+    const v = Math.round(pressure * 255);
+    ctx.globalCompositeOperation = 'lighten';
+    ctx.fillStyle = `rgb(${v}, ${v}, ${v})`;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** Board box -> integer canvas-local rect clamped to the window, or null if empty. @private */
+  _localRect(box) {
+    const c = this._main.canvas;
+    const x0 = Math.max(0, Math.floor(box.x0 - this.origin.x));
+    const y0 = Math.max(0, Math.floor(box.y0 - this.origin.y));
+    const x1 = Math.min(c.width, Math.ceil(box.x1 - this.origin.x));
+    const y1 = Math.min(c.height, Math.ceil(box.y1 - this.origin.y));
+    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+  }
+
+  /** Window-sized scratch canvases for folds. @private */
+  _scratch() {
+    if (!this._scratchSet) {
+      const { width, height } = this._main.canvas;
+      this._scratchSet = { a: newEntry(width, height), b: newEntry(width, height), c: newEntry(width, height), d: newEntry(width, height), e: newEntry(width, height) };
+    }
+    return this._scratchSet;
+  }
+
+  /**
+   * Folds the open chunk (`cur`) into `dst` over rect `r`. Where `cur` overlaps
+   * the previous chunk's footprint the result is max(dst, cur); elsewhere it
+   * stacks (dst over cur); the footprint's coverage lerps between the two.
+   * @private
+   */
+  _fold(dst, r) {
+    const { a, b, c, d, e } = this._scratch();
+    copyRect(e, this._cur.canvas, r, GREY_TO_ALPHA);
+    const cur = e.canvas;
+    if (!this._hasPrev) {
+      blendRect(dst, cur, r, 'source-over');
+      return;
+    }
+    const fprev = this._fprev.canvas;
+    // a = stacked result, minus the footprint
+    copyRect(a, dst.canvas, r);
+    blendRect(a, cur, r, 'source-over');
+    blendRect(a, fprev, r, 'destination-out');
+    // b = alpha max(dst, cur) via grey, inside the footprint only
+    copyRect(c, dst.canvas, r, ALPHA_TO_GREY);
+    copyRect(d, cur, r, ALPHA_TO_GREY);
+    blendRect(c, d.canvas, r, 'lighten');
+    copyRect(b, c.canvas, r, GREY_TO_ALPHA);
+    blendRect(b, fprev, r, 'destination-in');
+    // the two halves tile the rect
+    copyRect(dst, a.canvas, r);
+    blendRect(dst, b.canvas, r, 'lighter');
+  }
+
+  /** Folds the open chunk into the settled canvas and makes its footprint the "previous" one. @private */
+  _closeChunk() {
+    const box = this._chunkBox;
+    this._chunkLen = 0;
+    this._chunkBox = null;
+    if (!box) return;
+    const r = this._localRect(box);
+    if (r) {
+      this._fold(this._main, r);
+      this._cur.ctx.fillStyle = '#000';
+      this._cur.ctx.fillRect(r.x, r.y, r.w, r.h);
+    }
+    const t = this._fprev;
+    this._fprev = this._fcur;
+    this._fcur = t;
+    const { width, height } = t.canvas;
+    t.ctx.clearRect(0, 0, width, height);
+    this._hasPrev = true;
+  }
+
+  /** Rebuilds the combined alpha view over the changed region. @private */
+  _buildView() {
+    const { width, height } = this._main.canvas;
+    let r;
+    if (!this._view) {
+      this._view = newEntry(width, height);
+      r = { x: 0, y: 0, w: width, h: height };
+    } else {
+      r = this._localRect(this._dirty);
+    }
+    this._dirty = null;
+    if (!r) return;
+    if (this._mode === 'max') {
+      if (canvasFilterWorks()) copyRect(this._view, this._main.canvas, r, GREY_TO_ALPHA);
+      else greyToAlphaRect(this._view, this._main.canvas, r);
+    } else {
+      copyRect(this._view, this._main.canvas, r);
+      if (this._chunkBox) this._fold(this._view, r);
+    }
+  }
+
+  /**
    * Grows the window to cover a board-space box, carrying the stamped pixels over.
    * @private
    */
   _ensure(minX, minY, maxX, maxY) {
-    const old = this.canvas;
+    const old = this._main?.canvas;
     const o = this.origin;
     if (old && minX >= o.x && minY >= o.y && maxX <= o.x + old.width && maxY <= o.y + old.height) return;
 
@@ -208,17 +488,31 @@ export class PressureMask {
       bottom = Math.max(bottom, o.y + old.height);
     }
 
-    const canvas = document.createElement('canvas');
-    canvas.width = right - left;
-    canvas.height = bottom - top;
-    const ctx = canvas.getContext('2d');
-    if (old) ctx.drawImage(old, o.x - left, o.y - top);
+    const width = right - left;
+    const height = bottom - top;
+    const grow = (entry, opaque) => {
+      const next = newEntry(width, height);
+      if (opaque) {
+        next.ctx.fillStyle = '#000';
+        next.ctx.fillRect(0, 0, width, height);
+      }
+      if (entry) next.ctx.drawImage(entry.canvas, o.x - left, o.y - top);
+      return next;
+    };
 
-    this.canvas = canvas;
-    this.ctx = ctx;
+    this._main = grow(this._main, this._mode === 'max');
+    if (this._mode === 'stack') {
+      this._cur = grow(this._cur, true);
+      this._fcur = grow(this._fcur, false);
+      this._fprev = grow(this._fprev, false);
+    }
+    this._view = null;
+    this._dirty = null;
+    this._scratchSet = null;
     this.origin = { x: left, y: top };
   }
 }
+
 
 /**
  * Composites a stroke's coverage with its pressure applied, into a scratch

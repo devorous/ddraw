@@ -1,0 +1,129 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pressureMask bench</title>
+<script type="module">
+  import { PressureMask, compositePressureStroke, pressureMaskMode } from '/src/utils/pressureMask.js';
+  import { PRESSURE_TARGET_OPACITY } from '/shared/pressureTargets.js';
+
+  const alphaAt = (mask, x, y) => {
+    const c = mask.canvas;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    return ctx.getImageData(Math.round(x - mask.origin.x), Math.round(y - mask.origin.y), 1, 1).data[3];
+  };
+
+  // 'default' means no flag set at all; it must behave like 'max'.
+  // 'nofilter' is max with ctx.filter treated as unavailable (getImageData fallback).
+  const effective = (mode) => (mode === 'default' || mode === 'nofilter' ? 'max' : mode);
+  const setMode = (mode) => {
+    globalThis.__ddrawMaskNoFilter = mode === 'nofilter';
+    if (mode === 'nofilter') {
+      globalThis.__ddrawMaskMode = 'max';
+    } else if (mode === 'default') {
+      delete globalThis.__ddrawMaskMode;
+      try { localStorage.removeItem('ddrawMaskMode'); } catch {}
+    } else {
+      globalThis.__ddrawMaskMode = mode;
+    }
+  };
+
+  const run = (mode, fn) => {
+    setMode(mode);
+    const m = new PressureMask();
+    fn(m);
+    if (pressureMaskMode() !== effective(mode)) throw new Error('mode not applied');
+    return m;
+  };
+
+  function straight(m) {
+    for (let i = 0; i < 60; i++) m.stampTo(50 + i * 5, 100, 20, 0.5);
+  }
+
+  function crossing(m) {
+    const R = 20;
+    for (const [x, y, p] of [[50, 100, 0.8], [350, 100, 0.8]]) m.stampTo(x, y, R, p);
+    // Walk away, then come back up through the dark pass at 0.3.
+    for (const [x, y, p] of [[350, 300, 0.3], [200, 300, 0.3], [200, 20, 0.3]]) m.stampTo(x, y, R, p);
+  }
+
+  function falling(m) {
+    for (let i = 0; i < 60; i++) m.stampTo(50 + i * 5, 100, 20, 0.9 - (0.7 * i) / 59);
+  }
+
+  function spiral(m, record) {
+    for (let i = 0; i < 4000; i++) {
+      const a = i * 0.05;
+      const rad = 20 + 60 * (0.5 + 0.5 * Math.sin(i * 0.002)) + a * 0.6;
+      const t0 = performance.now();
+      m.stampTo(300 + Math.cos(a) * rad, 300 + Math.sin(a) * rad, 25, 0.2 + 0.7 * (0.5 + 0.5 * Math.sin(i * 0.01)));
+      record?.push(performance.now() - t0);
+    }
+  }
+
+  const median = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
+
+  window.runBench = (mode) => {
+    const out = { mode, checks: [], perf: null };
+    const check = (name, ok, detail) => out.checks.push({ name, ok, detail });
+
+    // 1. plain stroke is not darkened
+    {
+      const m = run(mode, straight);
+      const vals = [];
+      for (let x = 80; x <= 310; x += 3) for (const dy of [-10, 0, 10]) vals.push(alphaAt(m, x, 100 + dy));
+      const lo = Math.min(...vals), hi = Math.max(...vals);
+      check('1 straight constant 0.5', lo >= 127.5 - 3 && hi <= 127.5 + 3, `alpha ${lo}..${hi} (want ~128)`);
+    }
+    // 2. crossing
+    {
+      const m = run(mode, crossing);
+      const a = alphaAt(m, 200, 100);
+      const want = { replace: 0.3, max: 0.8, stack: 0.86, default: 0.8, nofilter: 0.8 }[mode] * 255;
+      check('2 crossing', Math.abs(a - want) <= 4, `alpha ${a} (want ~${Math.round(want)})`);
+      out.cross = a;
+    }
+    // 3. falling pressure: centre not lighter than rim (rim sampled just inside the disc edge)
+    {
+      const m = run(mode, falling);
+      let bad = 0;
+      const notes = [];
+      for (let x = 100; x <= 280; x += 10) {
+        const centre = alphaAt(m, x, 100);
+        const rim = alphaAt(m, x, 100 + 15);
+        if (centre < rim - 2) { bad++; notes.push(`x${x}:${centre}<${rim}`); }
+      }
+      check('3 falling centre >= rim', mode === 'replace' || bad === 0, `${bad} columns lighter at centre ${notes.join(' ')}`);
+    }
+
+    // perf
+    {
+      setMode(mode);
+      spiral(new PressureMask(), null); // warm-up
+      const times = [];
+      const m = new PressureMask();
+      const t0 = performance.now();
+      spiral(m, times);
+      // 1px readback forces queued GPU work to finish, so the total is real time, not submit time
+      for (const e of [m._main, m._cur, m._fcur]) e?.ctx.getImageData(0, 0, 1, 1);
+      const total = performance.now() - t0;
+      const cover = document.createElement('canvas');
+      cover.width = m.canvas.width;
+      cover.height = m.canvas.height;
+      const cctx = cover.getContext('2d');
+      cctx.fillStyle = '#000';
+      cctx.fillRect(0, 0, cover.width, cover.height);
+      const scratch = {};
+      const opts = { targets: PRESSURE_TARGET_OPACITY, hardness: 1, size: 25, color: '#000' };
+      const comps = [];
+      for (let i = 0; i < 21; i++) {
+        const c0 = performance.now();
+        m._dirty = m._view ? { x0: -1e9, y0: -1e9, x1: 1e9, y1: 1e9 } : null; // force a full rebuild like a first read
+        compositePressureStroke(scratch, cover, m.origin, m, opts);
+        scratch.a.ctx.getImageData(0, 0, 1, 1);
+        if (i > 0) comps.push(performance.now() - c0);
+      }
+      out.perf = { stampMedian: median(times), total, compMedian: median(comps), win: `${cover.width}x${cover.height}` };
+    }
+    return out;
+  };
+  window.benchReady = true;
+</script>
