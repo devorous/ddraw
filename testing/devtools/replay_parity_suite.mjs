@@ -41,6 +41,7 @@ import {
   captureReplayLayerSnapshotsInPage,
   diffSnapshots,
 } from '../lib/layerDiff.mjs';
+import { pressureActions } from '../lib/pressureStroke.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -272,6 +273,11 @@ const TEST_CASES = [
   },
 ];
 
+// Variable-pressure, self-crossing strokes (pressure drives opacity, or opacity + size) for Ink and
+// Fluid Brush, plus undo/redo and a mid-stroke cancel / tool switch. Shared with
+// testing/pressure_opacity_sync.test.mjs via testing/lib/pressureStroke.mjs.
+TEST_CASES.push(...pressureActions());
+
 // ─── Page Helpers ──────────────────────────────────────────────────────────
 
 async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -399,6 +405,7 @@ async function resetToolState(page) {
   await page.evaluate(() => {
     const app = window.app;
     app?.handleBlendModeChange?.('source-over');
+    app?.setPressureTargets?.(1);
 
     // A selection MASK is user state, not board state — exactly like the blend
     // mode above, and with exactly the same failure mode: board.clear() does

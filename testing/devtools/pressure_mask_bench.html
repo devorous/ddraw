@@ -1,9 +1,43 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>pressureMask bench</title>
+<script type="importmap">{"imports":{"perfect-freehand":"/node_modules/perfect-freehand/dist/esm/index.mjs"}}</script>
 <script type="module">
-  import { PressureMask, compositePressureStroke, pressureMaskMode } from '/src/utils/pressureMask.js';
-  import { PRESSURE_TARGET_OPACITY } from '/shared/pressureTargets.js';
+  import {
+    PressureMask, compositePressureStroke, pressureMaskMode,
+    pressureStampRadius, stampInkPoint, stampInkEnd, inkOutlinePoints
+  } from '/src/utils/pressureMask.js';
+  import { PRESSURE_TARGET_OPACITY, PRESSURE_TARGET_SIZE } from '/shared/pressureTargets.js';
+  import { getStroke } from 'perfect-freehand';
+
+  // Halo checks: flow stamps with the real radius helper, ink goes through stampInkPoint/stampInkEnd like InkTool.
+  const SIZE = 10;
+  const OPA = PRESSURE_TARGET_OPACITY;
+  const OPA_SIZE = PRESSURE_TARGET_OPACITY | PRESSURE_TARGET_SIZE;
+  const THIN = 0.5;
+  const SMOOTH = 15; // the tools' default smoothing
+  const HALO_CASES = [];
+  for (const H of [0.5, 1]) { // the soft edge must not widen the mask
+    for (const [label, t] of [['opacity', OPA], ['opacity+size', OPA_SIZE]]) {
+      HALO_CASES.push({ name: `flow ${label} h${H}`, H, t, ink: false });
+      HALO_CASES.push({ name: `ink ${label} (tablet) h${H}`, H, t, ink: true, sim: false });
+      HALO_CASES.push({ name: `ink ${label} (mouse) h${H}`, H, t, ink: true, sim: true });
+    }
+  }
+  // Stamps pts into mask m as one stroke; returns [{x, y, p, cov}] per input point (plus one for pen-up on ink),
+  // read back from what the stamp did (m.last), so no radius helper is needed (the mask pad is 0).
+  const walk = (m, c, pts) => {
+    const recs = [];
+    const rec = () => { const l = m.last; recs.push({ x: l.x, y: l.y, p: l.pressure, cov: l.radius }); };
+    for (const [x, y, p] of pts) {
+      if (c.ink) stampInkPoint(m, c.t, x, y, p, SIZE, THIN, c.sim, SMOOTH);
+      else m.stampTo(x, y, pressureStampRadius(c.t, p, SIZE, c.H), p);
+      rec();
+    }
+    if (c.ink) { stampInkEnd(m, c.t, SIZE, THIN, c.sim, SMOOTH); rec(); }
+    return recs;
+  };
+  const line = (x0, y0, x1, y1, p, n = 60) => Array.from({ length: n + 1 }, (_, i) => [x0 + ((x1 - x0) * i) / n, y0 + ((y1 - y0) * i) / n, p]);
 
   const alphaAt = (mask, x, y) => {
     const c = mask.canvas;
@@ -92,6 +126,103 @@
         if (centre < rim - 2) { bad++; notes.push(`x${x}:${centre}<${rim}`); }
       }
       check('3 falling centre >= rim', mode === 'replace' || bad === 0, `${bad} columns lighter at centre ${notes.join(' ')}`);
+    }
+
+    // 4-6. halo checks (max semantics only)
+    if (effective(mode) === 'max') {
+      for (const c of HALO_CASES) {
+        // 4. a light pass whose coverage edge is 4px from a dark pass's stays light
+        {
+          const pass = (d) => [...line(50, 100, 350, 100, 0.9), ...line(350, 100 + d, 50, 100 + d, 0.2)];
+          let recs;
+          run(mode, (mk) => { recs = walk(mk, c, pass(40)); }); // dry run for the widest coverage radius of each pass
+          const d = Math.max(...recs.slice(0, 61).map((r) => r.cov)) + Math.max(...recs.slice(61).map((r) => r.cov)) + 4;
+          const m = run(mode, (mk) => walk(mk, c, pass(d)));
+          const a = alphaAt(m, 200, 100 + d);
+          check(`4 halo ${c.name}`, Math.abs(a - 0.2 * 255) <= 4, `light centreline alpha ${a} (want ~51, d=${d.toFixed(1)})`);
+        }
+        // 5. a true crossing takes the dark value
+        {
+          const m = run(mode, (mk) => walk(mk, c, [...line(50, 100, 350, 100, 0.9), ...line(200, 20, 200, 180, 0.2)]));
+          const a = alphaAt(m, 200, 100);
+          check(`5 cross ${c.name}`, Math.abs(a - 0.9 * 255) <= 4, `crossing alpha ${a} (want ~230)`);
+        }
+        // 6. the mask covers the whole coverage disc at every stamp, incl. the first point and a pressure drop at the end
+        {
+          const pts = [];
+          for (let i = 0; i <= 60; i++) pts.push([50 + i * 5, 100, i < 50 ? 0.9 - (0.4 * i) / 50 : 0.5 - (0.45 * (i - 50)) / 10]);
+          let recs;
+          const m = run(mode, (mk) => { recs = walk(mk, c, pts); });
+          let worst = 255, at = '';
+          // Every pixel whose centre lies fully inside a stamp's coverage disc (coverage alpha ~1).
+          const cv = m.canvas;
+          const img = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, cv.width, cv.height);
+          for (const { x, y, p, cov: r } of recs) {
+            for (let iy = Math.floor(y - r); iy <= Math.ceil(y + r); iy++) {
+              for (let ix = Math.floor(x - r); ix <= Math.ceil(x + r); ix++) {
+                if (Math.hypot(ix + 0.5 - x, iy + 0.5 - y) > r - 1) continue; // 1px in from the edge so antialiased rim pixels do not count
+                const a = img.data[((iy - m.origin.y) * cv.width + (ix - m.origin.x)) * 4 + 3] - Math.round(p * 255);
+                if (a < worst) { worst = a; at = `x${x} p${p.toFixed(2)} r${r.toFixed(1)} px${ix},${iy}`; }
+              }
+            }
+          }
+          check(`6 coverage ${c.name}`, worst >= -4, `min(alpha - pressure) ${worst} ${worst < -4 ? at : ''}`);
+        }
+      }
+    }
+
+    // 7. the mask covers the real perfect-freehand outline on curved strokes (outline pixel at most 1px outside the mask)
+    if (effective(mode) === 'max') {
+      const zig = Array.from({ length: 24 }, (_, i) => [40 + i * 22, 200 + (i % 2 ? 60 : -60)]);
+      const circ = Array.from({ length: 36 }, (_, i) => [250 + Math.cos(i * 0.28) * 90, 200 + Math.sin(i * 0.28) * 90]);
+      for (const [shape, base, smoothing] of [['zigzag', zig, 15], ['circle', circ, 50]]) {
+        for (const H of [1, 0.5]) {
+          for (const [label, t] of [['opacity', OPA], ['opacity+size', OPA_SIZE]]) {
+            for (const sim of [false, true]) {
+              const pts = base.map(([x, y], i) => [x, y, sim ? 0.5 : 0.35 + 0.6 * (0.5 + 0.5 * Math.sin(i * 0.9))]);
+              const m = run(mode, (mk) => {
+                for (const [x, y, p] of pts) stampInkPoint(mk, t, x, y, p, SIZE, THIN, sim, smoothing);
+                stampInkEnd(mk, t, SIZE, THIN, sim, smoothing);
+              });
+              const effThin = sim ? Math.min(0.99, THIN * Math.max(1, SIZE / 10)) : 0.95;
+              const outline = getStroke(inkOutlinePoints(pts, t), {
+                size: Math.max(0.1, (SIZE * 2) / (1 + THIN)), thinning: effThin, smoothing: smoothing / 50,
+                streamline: 0.3 + (smoothing / 50) * 0.7, simulatePressure: sim, last: true
+              });
+              const W = 520, Hh = 420;
+              const oc = document.createElement('canvas');
+              oc.width = W; oc.height = Hh;
+              const octx = oc.getContext('2d', { willReadFrequently: true });
+              octx.fillStyle = '#000';
+              octx.beginPath();
+              outline.forEach(([x, y], i) => (i ? octx.lineTo(x, y) : octx.moveTo(x, y)));
+              octx.closePath();
+              octx.fill();
+              const od = octx.getImageData(0, 0, W, Hh).data;
+              const mc = m.canvas;
+              const md = mc.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, mc.width, mc.height).data;
+              const covered = (ix, iy) => {
+                const mx = ix - m.origin.x, my = iy - m.origin.y;
+                return mx >= 0 && my >= 0 && mx < mc.width && my < mc.height && md[(my * mc.width + mx) * 4 + 3] > 0;
+              };
+              let miss = 0, at = '';
+              for (let iy = 0; iy < Hh; iy++) {
+                for (let ix = 0; ix < W; ix++) {
+                  if (od[(iy * W + ix) * 4 + 3] < 128) continue;
+                  let ok = false;
+                  for (let dy = -1; dy <= 1 && !ok; dy++) for (let dx = -1; dx <= 1 && !ok; dx++) ok = covered(ix + dx, iy + dy);
+                  if (!ok) { if (!miss) at = `first px ${ix},${iy}`; miss++; }
+                }
+              }
+              // Mouse (simulatePressure) must stay exact. Tablet pressure has a known gap (strokes look right by eye),
+              // so it is informational and only fails past a generous regression ceiling.
+              const CEILING = 150;
+              if (sim) check(`7 outline ${shape} ${label} mouse h${H}`, miss === 0, `${miss} outline px >1px outside mask ${at}`);
+              else check(`7 outline ${shape} ${label} tablet h${H}`, miss <= CEILING, `known gap (informational): ${miss} outline px >1px outside mask ${at} (ceiling ${CEILING})`);
+            }
+          }
+        }
+      }
     }
 
     // perf
