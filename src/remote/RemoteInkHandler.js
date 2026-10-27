@@ -10,7 +10,8 @@ import {
   compositePressureStroke,
   hardnessBlurAmount,
   inkOutlinePoints,
-  inkPressureMaskRadius,
+  stampInkEnd,
+  stampInkPoint,
   usesPressureMask
 } from '../utils/pressureMask.js';
 
@@ -174,8 +175,8 @@ export class RemoteInkHandler {
       if (user._inkPressureMask) {
         // Mirrors InkTool._stampPressure point for point.
         const thinning = user.thinning !== undefined ? user.thinning : 0.5;
-        const radius = inkPressureMaskRadius(user._inkTargets, user._inkSize || user.size, thinning, user._inkHardness ?? 1);
-        user._inkPressureMask.stampTo(points[i], points[i + 1], radius, pressure);
+        const simulatePressure = user.simulatePressure !== undefined ? user.simulatePressure : true;
+        stampInkPoint(user._inkPressureMask, user._inkTargets, points[i], points[i + 1], pressure, user._inkSize || user.size, thinning, simulatePressure, user.smoothing);
       }
       this.expandInkDirtyBounds(user, points[i], points[i + 1]);
     }
@@ -275,6 +276,12 @@ export class RemoteInkHandler {
     // it, and letting it fire afterwards would redraw a preview for a stroke
     // that has already been committed and cleared.
     this.cancelPendingPreview(user);
+    if (user._inkPressureMask) {
+      // Mirrors InkTool._stampPressureEnd.
+      const thinning = user.thinning !== undefined ? user.thinning : 0.5;
+      const simulatePressure = user.simulatePressure !== undefined ? user.simulatePressure : true;
+      stampInkEnd(user._inkPressureMask, user._inkTargets, user._inkSize || user.size, thinning, simulatePressure, user.smoothing);
+    }
     this.renderInkStroke(user, true);
     const points = user._inkPoints.map(pt => ({ x: pt[0], y: pt[1] }));
 

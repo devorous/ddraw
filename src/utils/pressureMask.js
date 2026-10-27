@@ -53,18 +53,36 @@ export function hardnessBlurAmount(hardness, size) {
 }
 
 /**
- * How far past its coverage a mask stamp reaches, so the soft edge — which the
- * mask also scales — is covered too.
+ * How far past its coverage a mask stamp reaches. Always zero: the mask scales
+ * the solid coverage before compositePressureStroke blurs it, so the soft edge
+ * needs no pad, and stamps must hug the coverage (under 'max' an oversized heavy
+ * stamp would darken lighter ink near it).
  * @param {number} hardness - 0-1.
  * @param {number} size
  * @returns {number}
  */
 export function pressureMaskPad(hardness, size) {
-  return blurExtent(hardnessBlurAmount(hardness, size)) + 2;
+  return 0;
+}
+
+/** No slack past a circle stamp's radius: the mask matches the coverage edge exactly, so a lighter part of a stroke is never darkened by a neighbouring heavier part's rim. */
+const FLOW_MASK_MARGIN = 0;
+
+/**
+ * Radius the flow pen's coverage stamp has at this pressure (before its 0.5 floor).
+ * @param {number} targets
+ * @param {number} pressure - 0-1.
+ * @param {number} size - Stroke size at its start.
+ * @returns {number}
+ */
+export function flowCoverageRadius(targets, pressure, size) {
+  const sized = ((targets ?? DEFAULT_PRESSURE_TARGETS) & PRESSURE_TARGET_SIZE) ? pressure : 1;
+  return sized * size;
 }
 
 /**
- * Mask radius for a circle-stamped stroke (flow pen) at this pressure.
+ * Mask radius for a circle-stamped stroke (flow pen) at this pressure: its
+ * coverage radius plus the soft edge.
  * @param {number} targets
  * @param {number} pressure - 0-1.
  * @param {number} size - Stroke size at its start.
@@ -72,22 +90,114 @@ export function pressureMaskPad(hardness, size) {
  * @returns {number}
  */
 export function pressureStampRadius(targets, pressure, size, hardness) {
-  const sized = ((targets ?? DEFAULT_PRESSURE_TARGETS) & PRESSURE_TARGET_SIZE) ? pressure : 1;
-  return sized * size + pressureMaskPad(hardness, size);
+  return Math.max(0.5, flowCoverageRadius(targets, pressure, size)) + FLOW_MASK_MARGIN + pressureMaskPad(hardness, size);
+}
+
+/** perfect-freehand's RATE_OF_PRESSURE_CHANGE. */
+const INK_PRESSURE_RATE = 0.275;
+
+/** The constants perfect-freehand derives from the ink options, as InkTool/RemoteInkHandler pass them. */
+function inkOutlineParams(targets, size, thinning, simulatePressure, smoothing) {
+  const sm = smoothing !== undefined ? smoothing / 50 : 0.5;
+  return {
+    sizeDriven: ((targets ?? DEFAULT_PRESSURE_TARGETS) & PRESSURE_TARGET_SIZE) !== 0,
+    optionsSize: Math.max(0.1, (size * 2) / (1 + thinning)),
+    effectiveThinning: simulatePressure ? Math.min(0.99, thinning * Math.max(1, size / 10)) : 0.95,
+    lerp: 0.15 + (1 - (0.3 + sm * 0.7)) * 0.85, // getStrokePoints' streamline step
+    simulatePressure
+  };
+}
+
+const inkHalfWidth = (k, pressure) => k.optionsSize * (0.5 - k.effectiveThinning * (0.5 - pressure));
+
+/**
+ * Advances the replayed outline by one kept stroke point (getStrokeOutlinePoints'
+ * pressure step) and returns that point's half-width.
+ * simulatePressure: p' = p + (min(1, 1 - sp) - p) * sp * 0.275, sp = min(1, distance / options.size).
+ * Its start value comes from a lookahead over the first 10 points, so it starts
+ * at its upper bound 1 here and only settles at or above the real one.
+ * Otherwise p is the point's own pressure (when size-driven) or 1.
+ */
+function inkStepRadius(st, k, distance, sized) {
+  if (!k.simulatePressure) return inkHalfWidth(k, sized);
+  const sp = Math.min(1, distance / k.optionsSize);
+  st.v = Math.min(1, st.v + (Math.min(1, 1 - sp) - st.v) * (sp * INK_PRESSURE_RATE));
+  return inkHalfWidth(k, st.v);
 }
 
 /**
- * Mask radius for an ink stroke. perfect-freehand's outline never reaches past
- * its `size` option, and the dot/segment fallbacks stay inside the stroke
- * size, so cover the larger of the two plus the soft edge.
+ * Stamps one input point of an ink stroke into its mask, where the outline
+ * really is. perfect-freehand draws the outline around streamlined points that
+ * lag the input (each is a lerp from the last kept point toward the input, and
+ * none is kept until the path has run `options.size`), so this replays that
+ * (getStrokePoints) and stamps at the streamlined point, with the outline's
+ * half-width there. State lives in `mask.inkState`, so it resets with the
+ * mask, and the sender and receivers stamping the same points in the same
+ * order get identical masks. Call stampInkEnd when the stroke ends.
+ * @param {PressureMask} mask
  * @param {number} targets
+ * @param {number} x - Raw input x.
+ * @param {number} y
+ * @param {number} pressure - 0-1.
  * @param {number} size - Stroke size at its start.
- * @param {number} thinning - 0-1.
- * @param {number} hardness - 0-1.
- * @returns {number}
+ * @param {number} thinning - The user's 0-1 thinning.
+ * @param {boolean} simulatePressure
+ * @param {number|undefined} smoothing - The user's 0-50 smoothing (undefined = the tools' default).
  */
-export function inkPressureMaskRadius(targets, size, thinning, hardness) {
-  return Math.max(size, (size * 2) / (1 + thinning)) + pressureMaskPad(hardness, size);
+export function stampInkPoint(mask, targets, x, y, pressure, size, thinning, simulatePressure, smoothing) {
+  const p = Math.round(Math.max(0, Math.min(1, pressure)) * 255) / 255;
+  const k = inkOutlineParams(targets, size, thinning, simulatePressure, smoothing);
+  const sized = k.sizeDriven ? p : 1;
+  let st = mask.inkState;
+  if (!st) {
+    // First point: the outline starts here; a lone point renders as a dot of radius size * pressure.
+    st = mask.inkState = { n: 1, mx: x, my: y, run: 0, reached: false, v: 1, sizedPrev: sized, rx: x, ry: y, rp: pressure };
+    mask.stampTo(x, y, Math.max(inkHalfWidth(k, simulatePressure ? 1 : sized), size * sized), pressure);
+    return;
+  }
+  st.n++;
+  st.rx = x; st.ry = y; st.rp = pressure;
+  const nx = st.mx + (x - st.mx) * k.lerp;
+  const ny = st.my + (y - st.my) * k.lerp;
+  const distance = Math.hypot(nx - st.mx, ny - st.my);
+  if (st.n === 2) {
+    // Two points render as a round-capped segment between the raw points.
+    mask.stampTo(x, y, size * Math.max(sized, st.sizedPrev) / 2, pressure);
+  }
+  if (distance === 0) return;
+  st.run += distance;
+  if (!st.reached) {
+    if (st.run < k.optionsSize) return; // the library drops points until the path is as long as options.size
+    st.reached = true;
+  }
+  // The library doesn't carry a corner point's pressure forward (a turn past 90 degrees), so undo it.
+  const vx = (st.mx - nx) / distance;
+  const vy = (st.my - ny) / distance;
+  if (st.vx !== undefined && vx * st.vx + vy * st.vy < 0) st.v = st.vBefore;
+  st.vx = vx; st.vy = vy; st.vBefore = st.v;
+  st.mx = nx;
+  st.my = ny;
+  mask.stampTo(nx, ny, inkStepRadius(st, k, distance, sized), pressure);
+}
+
+/**
+ * Stamps the last input point the way perfect-freehand's `last` option keeps
+ * it, snapped to the raw point instead of lagging. Call once when the stroke
+ * ends, before its final render.
+ * @param {PressureMask} mask
+ * @param {number} targets
+ * @param {number} size
+ * @param {number} thinning
+ * @param {boolean} simulatePressure
+ * @param {number|undefined} smoothing
+ */
+export function stampInkEnd(mask, targets, size, thinning, simulatePressure, smoothing) {
+  const st = mask.inkState;
+  if (!st || st.n < 3) return; // dots and two-point segments are stamped as they come
+  const k = inkOutlineParams(targets, size, thinning, simulatePressure, smoothing);
+  const p = Math.round(Math.max(0, Math.min(1, st.rp)) * 255) / 255;
+  const distance = Math.hypot(st.rx - st.mx, st.ry - st.my);
+  mask.stampTo(st.rx, st.ry, inkStepRadius(st, k, distance, k.sizeDriven ? p : 1), st.rp);
 }
 
 /**
@@ -238,6 +348,7 @@ export class PressureMask {
   }
 
   _clear() {
+    this.inkState = null; // ink: outline radius recurrence (see stampInkPoint)
     this._mode = DEFAULT_MASK_MODE;
     this._main = null;   // replace: the mask; max: grey; stack: settled
     this._cur = null;    // stack: open chunk (grey, max semantics)
@@ -551,10 +662,19 @@ export function compositePressureStroke(scratch, coverage, coverageOrigin, mask,
   }, coverage);
 
   beginArea(a.ctx, area);
-  drawCoverage(a.ctx, coverage, source, blurAmount, color);
-
-  if (targets & PRESSURE_TARGET_OPACITY) {
-    drawMask(a.ctx, mask, coverageOrigin, 'destination-in');
+  const masked = (targets & PRESSURE_TARGET_OPACITY) !== 0;
+  if (masked && blurAmount > 0 && source) {
+    // Mask the solid coverage first, then blur it, so the soft edge carries the
+    // pressure and the mask needs no pad that could darken a lighter pass nearby.
+    const b = sizeScratch(scratch, 'b', coverage);
+    beginArea(b.ctx, source);
+    b.ctx.drawImage(coverage, source.x, source.y, source.width, source.height, source.x, source.y, source.width, source.height);
+    drawMask(b.ctx, mask, coverageOrigin, 'destination-in');
+    b.ctx.restore();
+    drawCoverage(a.ctx, b.canvas, source, blurAmount, color);
+  } else {
+    drawCoverage(a.ctx, coverage, source, blurAmount, color);
+    if (masked) drawMask(a.ctx, mask, coverageOrigin, 'destination-in');
   }
 
   a.ctx.restore();

@@ -17,7 +17,8 @@ import {
   compositePressureStroke,
   hardnessBlurAmount,
   inkOutlinePoints,
-  inkPressureMaskRadius,
+  stampInkEnd,
+  stampInkPoint,
   usesPressureMask
 } from '../utils/pressureMask.js';
 
@@ -243,6 +244,7 @@ export class InkTool extends Tool {
       this._expandPreviewBounds(pos.x, pos.y);
     }
 
+    this._stampPressureEnd(user);
     this.renderStroke(true, user);
     this.board.clearTop();
 
@@ -498,7 +500,20 @@ export class InkTool extends Tool {
   _stampPressure(user, x, y, pressure) {
     if (!usesPressureMask(this.pressureTargets)) return;
     const thinning = user.thinning !== undefined ? user.thinning : 0.5;
-    this.pressureMask.stampTo(x, y, inkPressureMaskRadius(this.pressureTargets, this._strokeSize, thinning, this.userHardness / 100), pressure);
+    const simulatePressure = user.simulatePressure !== undefined ? user.simulatePressure : true;
+    stampInkPoint(this.pressureMask, this.pressureTargets, x, y, pressure, this._strokeSize, thinning, simulatePressure, user.smoothing);
+  }
+
+  /**
+   * Stamps the stroke's last raw point once it ends, as RemoteInkHandler.handleInkUp does.
+   * @param {Object} user
+   * @private
+   */
+  _stampPressureEnd(user) {
+    if (!usesPressureMask(this.pressureTargets)) return;
+    const thinning = user.thinning !== undefined ? user.thinning : 0.5;
+    const simulatePressure = user.simulatePressure !== undefined ? user.simulatePressure : true;
+    stampInkEnd(this.pressureMask, this.pressureTargets, this._strokeSize, thinning, simulatePressure, user.smoothing);
   }
 
   /**
