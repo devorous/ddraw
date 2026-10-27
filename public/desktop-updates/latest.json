@@ -1,11 +1,11 @@
 {
-  "version": "1.16.0-beta",
-  "notes": "Floating gallery overhaul with a works-in-progress shelf and comments, pressure-controlled opacity, and fixes for logging out and restoring layers from history.",
-  "pub_date": "2026-09-14T15:26:26.892Z",
+  "version": "1.16.1-beta",
+  "notes": "Fixed pressure-controlled opacity so a stroke crossing itself no longer leaves a darker patch, and a lighter pass no longer erases the darker part under it.",
+  "pub_date": "2026-10-27T05:05:17.777Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://www.ddraw.ca/desktop-updates/windows-x86_64/Ddraw_1.16.0-beta_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSQ01XR1piUDlNemhZZTVpanlRS05jM1E4T09QOFBEYmV3Zmp5aW84cU1mYnBJTllKQmhzRnVJZmF1N1JvbVY2YUphU1NhRFNBbWJsZThxdDZ0SmZHYU4vWE5LZUhlN3c4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NDAwNjc5CWZpbGU6RGRyYXdfMS4xNi4wLWJldGFfeDY0LXNldHVwLmV4ZQo5K1BmQldsSC9jM2lHUU84cFd2ZGozdWY0Yy9hZGV6TU9TcGhva2hNTE1WRUNNVVJRTGxIdUV6WFlNd3E4WHRtcDkrYzl4Y0cwNFRnRnp6cTVLSERCUT09Cg=="
+      "url": "https://www.ddraw.ca/desktop-updates/windows-x86_64/Ddraw_1.16.1-beta_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSQ01XR1piUDlNemxrcnZTRnRpSFdiZWl6T25xNHFGUTZNNCtmeUJQWXNiOXdiMWtmSXpSTTdzUDJrMTd6MXJMc1prS0RtVTU2ZUxoRmlRdkJLcVZTbzJwRllGZEJpYVFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMDc4NzU5CWZpbGU6RGRyYXdfMS4xNi4xLWJldGFfeDY0LXNldHVwLmV4ZQpMWGNiTmZIeHZNYlZWVjZ5bWNDUHBnT29ZY2NpTVZhUkdXM0lHelJ6STVCOTI2cTdLSEdFSktDVTlIYlBqY01uaGMzR3M1STAweXpibEpDdkZhUHdBZz09Cg=="
     }
   }
 }
