@@ -1,7 +1,11 @@
 /** @fileoverview Curated changelog data for the "What's New" popup, generated from git history. */
 
 export const CHANGELOG = [
-  {v:'v1.16.0-beta', date:'2026-09-14', current:true, items:[
+  {v:'v1.16.1-beta', date:'2026-10-27', current:true, items:[
+    ['fixed', 'Fixed brush strokes that cross themselves leaving a darker patch when opacity follows pressure, for Ink and Fluid Brush'],
+    ['fixed', 'Fixed a lighter pass over a stroke erasing the darker part underneath it when opacity follows pressure'],
+  ]},
+  {v:'v1.16.0-beta', date:'2026-09-14', items:[
     ['added', 'Overhauled the floating gallery around the board - pieces now arrange themselves by hearts and artist, and can be dragged and thrown around without affecting other users'],
     ['added', 'Implemented a works-in-progress shelf - registered users can detach art from the board onto a shelf beneath it and place it back later'],
     ['added', 'Implemented commenting on the floating gallery'],

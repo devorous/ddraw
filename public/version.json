@@ -1,7 +1,7 @@
 {
-  "latest": "1.16.0-beta",
+  "latest": "1.16.1-beta",
   "minRequired": "1.16.0-beta",
-  "releaseDate": "2026-09-14T15:26:26.892Z",
-  "notes": "Overhauled the floating gallery around the board and implemented a WIP shelf where users can store unfinished art. Added a pressure-controlled opacity option for brushes.",
+  "releaseDate": "2026-10-27T05:05:17.777Z",
+  "notes": "Fixed pressure-controlled opacity so a stroke crossing itself no longer leaves a darker patch, and a lighter pass no longer erases the darker part under it.",
   "downloadUrl": "https://www.ddraw.ca/"
 }
